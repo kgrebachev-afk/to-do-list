@@ -26,18 +26,25 @@ const qr = readFileSync(src('vendor/qrcode.min.js'), 'utf8');
 const jsBase = readFileSync(src('app.js'), 'utf8').split('{{QR_JS}}').join(qr);
 const template = readFileSync(src('index.html'), 'utf8');
 
-const CSP_FILE = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
+// Le script de la page est autorisé par son empreinte (aucun autre script en ligne ne peut s'exécuter).
+const CSP_FILE = "default-src 'none'; script-src {{SCRIPT_HASH}}; style-src 'unsafe-inline'; font-src data:; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
 // Version web : le service worker et le manifeste viennent du même site ; aucune connexion de la page n'est permise.
-const CSP_WEB = `default-src 'none'; script-src 'self' 'unsafe-inline'; worker-src 'self'; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src ${CLOUD.url || "'none'"}; form-action 'none'; base-uri 'none'`;
+const CSP_WEB = `default-src 'none'; script-src 'self' {{SCRIPT_HASH}}; worker-src 'self'; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src ${CLOUD.url || "'none'"}; form-action 'none'; base-uri 'none'`;
 const HEAD_WEB = `
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">`;
 
 function page(csp, headExtra, cloud) {
-  const js = jsBase.split('{{CLOUD_URL}}').join(cloud ? CLOUD.url : '').split('{{CLOUD_KEY}}').join(cloud ? CLOUD.anonKey : '');
-  let html = template.split('{{CSS}}').join(css).split('{{JS}}').join(js)
+  const js = jsBase.split('{{VERSION}}').join(VERSION).split('{{CLOUD_URL}}').join(cloud ? CLOUD.url : '').split('{{CLOUD_KEY}}').join(cloud ? CLOUD.anonKey : '');
+  let html = template.split('{{CSS}}').join(css)
     .split('{{VERSION}}').join(VERSION).split('{{CSP}}').join(csp).split('{{HEAD_EXTRA}}').join(headExtra);
-  if (/\{\{[A-Z0-9_]+\}\}/.test(html)) throw new Error('Placeholder non remplacé');
+  // empreinte du contenu exact de la balise <script> (y compris les retours à la ligne autour)
+  const m = html.match(/<script>([\s\S]*?)<\/script>/);
+  if (!m || html.split('<script>').length !== 2) throw new Error('Un seul script en ligne attendu');
+  const body = m[1].split('{{JS}}').join(js);
+  const hash = `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`;
+  html = html.split('{{SCRIPT_HASH}}').join(hash).split('{{JS}}').join(js);
+  { const left = html.match(/\{\{[A-Z0-9_]+\}\}/); if (left) throw new Error('Placeholder non remplacé : ' + left[0]); }
   return html;
 }
 mkdirSync(out(''), { recursive: true });

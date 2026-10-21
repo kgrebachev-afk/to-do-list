@@ -135,6 +135,46 @@ ok('clés de notification créées une seule fois', JSON.parse(r.rows[0].v).publ
 r = await anon(`select vapid_public_key() k`);
 ok('clé publique lisible, pas la privée', r.rows[0].k === 'PUB');
 
+// --- description d'une liste (confirmation avant de la rejoindre)
+await anon(`select push_items($1, $2::jsonb)`, [B, JSON.stringify([{ id: '__settings', updated_at: 5, data: 'r' }, { id: 'gone', updated_at: 5, deleted: true, data: 'tomb' }])]);
+r = await anon(`select account_info($1) i`, [B]);
+ok('account_info : tâches (hors réglages et suppressions), appareils, date', r.rows[0].i.tasks === 1 && r.rows[0].i.devices === 0 && !!r.rows[0].i.created_at, r.rows[0].i);
+e = await rejects(() => anon(`select account_info($1)`, [key()]));
+ok('account_info : code inconnu refusé', !!e && /compte inconnu/.test(e.message), e && e.message);
+
+// --- dates venues du futur et volumes
+e = await rejects(() => anon(`select push_items($1, $2::jsonb)`, [B, JSON.stringify([{ id: 'futur', updated_at: Date.now() + 2 * 86400000, data: 'x' }])]));
+ok('date de modification à plus d\'un jour dans le futur refusée', !!e && /horloge/.test(e.message), e && e.message);
+await anon(`select push_items($1, $2::jsonb)`, [B, JSON.stringify([{ id: 'presque', updated_at: Date.now() + 3600000, data: 'x' }])]);
+ok('… une heure d\'avance reste acceptée', true);
+e = await rejects(() => anon(`select push_items($1, $2::jsonb)`, [B, JSON.stringify([{ id: 'enorme', updated_at: 1, data: 'x'.repeat(200001) }])]));
+ok('élément de plus de 200 000 caractères refusé', !!e);
+const Q = key(); await anon(`select create_account($1)`, [Q]);
+const big = 'y'.repeat(199000);
+for (let i = 0; i < 150; i += 10) await anon(`select push_items($1, $2::jsonb)`, [Q, JSON.stringify(Array.from({ length: 10 }, (_, j) => ({ id: 'q' + (i + j), updated_at: 1, data: big })))]);
+e = await rejects(() => anon(`select push_items($1, $2::jsonb)`, [Q, JSON.stringify([{ id: 'q-trop', updated_at: 1, data: big }])]));
+ok('quota de stockage (30 Mo) : envoi suivant refusé', !!e && /limite de stockage/.test(e.message), e && e.message);
+await anon(`select delete_account($1)`, [Q]);
+
+// --- abonnement d'un appareil : pas de détournement par un autre compte
+await anon(`select register_push($1, 'https://fcm.googleapis.com/fcm/send/vole', 'kA', 'authA', 'A')`, [A]);
+await anon(`select register_push($1, 'https://fcm.googleapis.com/fcm/send/vole', 'kB', 'authB', 'B')`, [B]);
+r = await svc(`select account, p256dh from push_subs where endpoint = 'https://fcm.googleapis.com/fcm/send/vole'`);
+ok('adresse d\'un appareil de A annoncée par B (autres clés) : ignorée', r.rows[0].account === hash(A) && r.rows[0].p256dh === 'kA', r.rows);
+await anon(`select register_push($1, 'https://fcm.googleapis.com/fcm/send/vole', 'kA2', 'authA', 'A')`, [B]);
+r = await svc(`select account from push_subs where endpoint = 'https://fcm.googleapis.com/fcm/send/vole'`);
+ok('… le même appareil (mêmes clés) peut passer sur le nouveau code', r.rows[0].account === hash(B), r.rows);
+
+// --- créations en masse depuis une même adresse
+await db.exec(`select set_config('request.headers', '{"x-forwarded-for":"203.0.113.9, 10.0.0.1"}', false)`);
+let made = 0, lastErr = null;
+for (let i = 0; i < 31; i++) { try { await anon(`select create_account($1)`, [key()]); made++; } catch (err) { lastErr = err; } }
+ok('30 créations par heure et par adresse, puis refus', made === 30 && /trop de créations/.test(lastErr && lastErr.message), [made, lastErr && lastErr.message]);
+await db.exec(`select set_config('request.headers', '{"x-forwarded-for":"198.51.100.7"}', false)`);
+await anon(`select create_account($1)`, [key()]);
+ok('… une autre adresse n\'est pas bloquée', true);
+await db.exec(`select set_config('request.headers', '', false)`);
+
 // --- suppression du compte (changement de code)
 await anon(`select delete_account($1)`, [A]);
 r = await svc(`select (select count(*) from items where account = $1)::int + (select count(*) from reminders where account = $1)::int + (select count(*) from push_subs where account = $1)::int + (select count(*) from accounts where id = $1)::int n`, [hash(A)]);
@@ -142,7 +182,11 @@ ok('delete_account efface tout pour A', r.rows[0].n === 0, r.rows);
 e = await rejects(() => anon(`select push_items($1, $2::jsonb)`, [A, JSON.stringify([{ id: 'apres', updated_at: 1, data: 'x' }])]));
 ok('après suppression : l\'ancien code ne peut plus rien envoyer', !!e && /compte inconnu/.test(e.message), e && e.message);
 r = await anon(`select count(*)::int n from pull_items($1)`, [B]);
-ok('le compte B est intact', r.rows[0].n === 1);
+ok('le compte B est intact', r.rows[0].n === 4, r.rows);
+e = await rejects(() => anon(`select create_account($1)`, [A]));
+ok('ancien code retiré : impossible de le recréer', !!e && /code retiré/.test(e.message), e && e.message);
+await anon(`select delete_account($1)`, [A]);
+ok('retirer deux fois : sans erreur', true);
 
 console.log(fails ? `${fails} ÉCHEC(S)` : 'tout est OK');
 process.exit(fails ? 1 : 0);

@@ -86,6 +86,11 @@ try:
     check('QR code affiché', A.locator('#syncQr svg').count() == 1)
     A.screenshot(path=str(OUT / '94-sync-qr.png'))
     qr_png = A.locator('#syncQr').screenshot()
+    A.evaluate("window.__odj.syncUi.reveal(false)")  # ce que fait la minuterie de 2 minutes
+    check('QR code masqué automatiquement (flou), code aussi', A.locator('.qrMask').is_visible() and A.evaluate("document.querySelector('#syncQrWrap').classList.contains('masked') && document.querySelector('#syncCodeTxt').classList.contains('masked')"))
+    A.screenshot(path=str(OUT / '94b-sync-qr-masked.png'))
+    A.click('.qrMask')
+    check('… réaffiché d\'un clic', not A.locator('.qrMask').is_visible() and not A.evaluate("document.querySelector('#syncQrWrap').classList.contains('masked')"))
     A.click('#syncFoot [data-sync="cancel"]')
     st = server()
     items = [i for i in st['items'] if i['id'] != '__settings']
@@ -134,6 +139,10 @@ try:
     L = phone_ctx(b); LP = L.new_page(); LP.on('pageerror', lambda e: errs.append('LIEN ' + str(e)))
     LP.goto(URL + '#lien=' + CODE); LP.wait_for_timeout(600)
     check('lien : demande de confirmation avec mise en garde', LP.locator('#dlgSyncTitle', has_text='Connecter cet appareil').is_visible() and 'propres appareils' in LP.locator('#syncBody').inner_text())
+    LP.locator('#syncInfo', has_text='tâches').wait_for(timeout=8000)
+    info = LP.locator('#syncInfo').inner_text()
+    check('lien : contenu de la liste visée affiché (date, 3 tâches, 1 appareil)', 'Liste créée le' in info and '3 tâches' in info and '1 appareil' in info, info)
+    LP.screenshot(path=str(OUT / '96b-link-confirm.png'))
     check('lien : le code est retiré de l\'adresse', '#lien' not in LP.url, LP.url)
     LP.click('[data-sync="join-pending"]'); LP.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
     wait_js(LP, "window.__odj.state().tasks.length === 3", 10000)
@@ -144,7 +153,9 @@ try:
     I = phone_ctx(b, ua=IPHONE_UA); IP = I.new_page(); IP.goto(URL + '#lien=' + CODE); IP.wait_for_timeout(600)
     check('iPhone (Safari) : explique l\'installation sur l\'écran d\'accueil', IP.locator('#dlgSyncTitle', has_text="Installer sur l'iPhone").is_visible() and 'écran d\'accueil' in IP.locator('#syncBody').inner_text())
     IP.screenshot(path=str(OUT / '97-iphone-install.png'))
-    IP.click('[data-sync="ios-anyway"]'); IP.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
+    IP.click('[data-sync="ios-anyway"]')
+    check('iPhone : « Connecter Safari » passe aussi par la confirmation', IP.locator('#dlgSyncTitle', has_text='Connecter cet appareil').is_visible())
+    IP.click('[data-sync="join-pending"]'); IP.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
     wait_js(IP, "window.__odj.state().tasks.length === 3", 10000)
     check('iPhone : « Connecter Safari » fonctionne aussi', len(titles(IP)) == 3)
     I.close()
@@ -163,6 +174,26 @@ try:
         print('scan :', CP.locator('#scanState').inner_text() if CP.locator('#scanState').count() else '?')
     check('scanner : le QR code filmé connecte l\'appareil', CP.evaluate("window.__odj.cloud.isOn()") and len(titles(CP)) == 3, titles(CP))
     check('scanner : caméra coupée après la lecture', CP.evaluate("window.__odj.scanner.stream === null"))
+    C.close()
+    # fenêtre fermée (Échap) pendant que la caméra s'ouvre : elle doit s'éteindre quand même
+    REC = "(() => { const g = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices); window.__streams = []; navigator.mediaDevices.getUserMedia = async (c) => { await new Promise(r => setTimeout(r, 700)); const s = await g(c); window.__streams.push(s); return s; }; })();"
+    C = phone_ctx(b2, permissions=['camera']); C.add_init_script(REC); EP = C.new_page(); EP.goto(URL); EP.wait_for_timeout(500)
+    EP.click('[data-synccard="scan"]'); EP.wait_for_timeout(150); EP.keyboard.press('Escape'); EP.wait_for_timeout(1500)
+    live = EP.evaluate("window.__streams.flatMap(s => s.getTracks()).filter(t => t.readyState === 'live').length")
+    check('scanner fermé pendant l\'ouverture de la caméra : caméra éteinte', not EP.locator('#dlgSync').is_visible() and live == 0 and EP.evaluate("window.__odj.scanner.stream === null"), live)
+    C.close()
+    # appareil qui a déjà des tâches : le scan demande confirmation (elles seraient envoyées sur la liste)
+    C = phone_ctx(b2, permissions=['camera']); TP = C.new_page(); TP.on('pageerror', lambda e: errs.append('SCAN2 ' + str(e))); TP.goto(URL); TP.wait_for_timeout(500)
+    TP.fill('#qaInput', 'Tâche perso du téléphone'); TP.press('#qaInput', 'Enter'); TP.wait_for_timeout(300)
+    TP.evaluate("window.__odj.syncUi.open('scan')")
+    TP.locator('#dlgSyncTitle', has_text='Connecter cet appareil').wait_for(timeout=20000)
+    TP.locator('#syncInfo', has_text='tâches').wait_for(timeout=8000)
+    check('scan avec des tâches sur l\'appareil : confirmation avec le contenu de la liste', not TP.evaluate("window.__odj.cloud.isOn()") and '3 tâches' in TP.locator('#syncInfo').inner_text(), TP.locator('#syncInfo').inner_text())
+    TP.click('[data-sync="join-pending"]'); TP.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
+    wait_js(TP, "window.__odj.cloud.isOn() && !window.__odj.cloud.running", 15000)
+    check('… puis connecté, sa tâche ajoutée à la liste', len(titles(TP)) == 4 and any(i['id'] == TP.evaluate("window.__odj.state().tasks.find(t => t.title === 'Tâche perso du téléphone').id") for i in server()['items']), titles(TP))
+    tp_id = TP.evaluate("window.__odj.state().tasks.find(t => t.title === 'Tâche perso du téléphone').id")
+    TP.evaluate(f"window.__odj.select('{tp_id}')"); TP.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Delete', bubbles: true}))"); TP.wait_for_timeout(2400)
     C.close(); b2.close()
 
     # --- modifications dans les deux sens
@@ -193,6 +224,24 @@ try:
     A.evaluate("window.__odj.setSetting('remindTime', '08:30')"); A.wait_for_timeout(2200)
     sync_now(P)
     check('réglage « heure par défaut » partagé', P.evaluate("window.__odj.state().settings.remindTime") == '08:30')
+
+    # --- éléments fabriqués sans la clé de chiffrement (serveur malveillant) : ignorés
+    ACCESS = A.evaluate(f"window.__odj.syncCode.keys('{CODE}').then(k => k.access)")
+    def rpc(fn, args):
+        req = urllib.request.Request(API + '/rest/v1/rpc/' + fn, data=json.dumps(args).encode(), headers={'apikey': 'sb_publishable_test', 'Content-Type': 'application/json'}, method='POST')
+        try:
+            with urllib.request.urlopen(req) as r: return r.status, (json.loads(r.read() or b'null'))
+        except urllib.error.HTTPError as e: return e.code, json.loads(e.read() or b'null')
+    ids = A.evaluate("Object.fromEntries(window.__odj.state().tasks.map(t => [t.title, t.id]))")
+    st = server(); src_row = next(i for i in st['items'] if i['id'] == ids['Noté dans le train'])
+    soon = int(time.time() * 1000) + 1500
+    rpc('push_items', {'p_key': ACCESS, 'p_rows': [
+        {'id': ids['Point atelier (salle B)'], 'updated_at': soon, 'deleted': True, 'data': None},
+        {'id': ids['Clôture J+3'], 'updated_at': soon, 'deleted': False, 'data': src_row['data']}]})
+    sync_now(A); sync_now(P)
+    check('suppression fabriquée sans la clé : ignorée', 'Point atelier (salle B)' in titles(A) and 'Point atelier (salle B)' in titles(P), titles(A))
+    check('contenu d\'une autre tâche recopié sous un autre identifiant : ignoré', 'Clôture J+3' in titles(A) and titles(A).count('Noté dans le train') == 1, titles(A))
+    A.wait_for_timeout(1600)
 
     # --- rappels : planning chiffré envoyé au serveur, notification déchiffrée sur le téléphone
     A.locator('#list .row', has_text='Clôture J+3').click()
@@ -285,12 +334,17 @@ try:
     # --- changer de code (téléphone perdu) : les autres appareils sont déconnectés et n'envoient plus rien
     A2.click('#btnSettings'); A2.click('[data-syncset="change"]')
     check('changer de code : avertissement clair', 'Tous vos autres appareils seront déconnectés' in A2.locator('#syncBody').inner_text())
+    S.fail = {'delete_account'}  # le retrait de l'ancien code échoue une première fois
     A2.click('[data-sync="change-go"]')
     A2.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=20000)
     NEW = A2.locator('.syncCode').inner_text().replace('-', '')
     check('nouveau code différent', NEW != CODE)
     st = server()
-    check('serveur : ancien compte supprimé, un seul compte', len(st['accounts']) == 1)
+    check('retrait de l\'ancien code en échec : gardé en attente, tâches déjà sur le nouveau', len(st['accounts']) == 2 and A2.evaluate("window.__odj.cloud.st.retire.length") == 1 and A2.evaluate("window.__odj.cloud.status") == 'ready')
+    S.fail = set(); sync_now(A2)
+    st = server()
+    check('… retiré à la synchronisation suivante : un seul compte', len(st['accounts']) == 1 and A2.evaluate("window.__odj.cloud.st.retire.length") == 0 and len(st['retired']) == 1)
+    check('ancien code retiré : impossible de le recréer', rpc('create_account', {'p_key': ACCESS})[1].get('message') == 'code retiré')
     A2.click('#syncFoot [data-sync="cancel"]'); A2.close()
     A.wait_for_timeout(300); sync_now(A)
     check('autre fenêtre du PC : passe au nouveau code toute seule', A.evaluate("window.__odj.cloud.st.code") == NEW and A.evaluate("window.__odj.cloud.status") == 'ready', A.evaluate("window.__odj.cloud.status"))

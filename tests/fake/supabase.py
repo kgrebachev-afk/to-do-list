@@ -10,11 +10,13 @@ class State:
     def __init__(self):
         self.lock = threading.Lock()
         self.accounts = {}   # empreinte -> {created}
+        self.retired = set() # empreintes des codes retirés (« Changer de code »)
         self.items = {}      # (compte, id) -> row
         self.reminders = {}  # (compte, task_id) -> row
         self.subs = {}       # endpoint -> row
         self.calls = []
         self.down = False
+        self.fail = set()    # fonctions en panne (réponse 503)
         self.clock = 0
     def now_iso(self):
         # horloge du serveur strictement croissante, au format renvoyé par PostgREST
@@ -59,7 +61,7 @@ class H(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         if u.path == '/__state':
             with S.lock:
-                return self.reply(200, {'accounts': list(S.accounts), 'items': [dict(r, account=k[0]) for k, r in S.items.items()],
+                return self.reply(200, {'accounts': list(S.accounts), 'retired': list(S.retired), 'items': [dict(r, account=k[0]) for k, r in S.items.items()],
                                         'reminders': [dict(r, account=k[0]) for k, r in S.reminders.items()], 'subs': list(S.subs.values()), 'calls': S.calls[-300:]})
         return self.reply(404, {'message': 'inconnu'})
 
@@ -75,6 +77,7 @@ class H(BaseHTTPRequestHandler):
         m = re.match(r'/rest/v1/rpc/(\w+)$', u.path)
         if not m: return self.reply(404, {'message': 'inconnu'})
         fn = m.group(1)
+        if fn in S.fail: return self.reply(503, {'message': 'service indisponible'})
         try:
             with S.lock: return self.rpc(fn, b)
         except Unknown:
@@ -84,17 +87,25 @@ class H(BaseHTTPRequestHandler):
 
     def rpc(self, fn, b):
         if fn == 'create_account':
-            S.accounts.setdefault(key_hash(b['p_key']), {'created': time.time()}); return self.reply(204)
+            h = key_hash(b['p_key'])
+            if h in S.retired: raise ValueError('code retiré')
+            S.accounts.setdefault(h, {'created': time.time()}); return self.reply(204)
         if fn == 'vapid_public_key':
             return self.reply(200, 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U')
         if fn == 'delete_account':
             a = key_hash(b['p_key'])
+            S.retired.add(a)
             S.accounts.pop(a, None)
             for d in (S.items, S.reminders):
                 for k in [k for k in d if k[0] == a]: del d[k]
             for e in [e for e, s in S.subs.items() if s['account'] == a]: del S.subs[e]
             return self.reply(204)
         a = account_of(b.get('p_key'))
+        if fn == 'account_info':
+            created = datetime.fromtimestamp(S.accounts[a]['created'], timezone.utc).isoformat()
+            tasks = sum(1 for (k, r) in S.items.items() if k[0] == a and not r['deleted'] and r['id'] != '__settings')
+            devices = sum(1 for s in S.subs.values() if s['account'] == a)
+            return self.reply(200, {'created_at': created, 'tasks': tasks, 'devices': devices})
         if fn == 'pull_items':
             mine = [r for (k, r) in S.items.items() if k[0] == a]
             since = b.get('p_since'); after = b.get('p_after_id') or ''
@@ -109,6 +120,8 @@ class H(BaseHTTPRequestHandler):
         if fn == 'push_items':
             rows = b['p_rows']
             if len(rows) > 500: raise ValueError('trop d\'éléments à la fois')
+            if any(int(r['updated_at']) > time.time() * 1000 + 86400000 for r in rows):
+                raise ValueError("horloge de l'appareil en avance de plus d'un jour : vérifiez la date et l'heure")
             rejected = []
             for r in rows:
                 k = (a, r['id']); cur = S.items.get(k)

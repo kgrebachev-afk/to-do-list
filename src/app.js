@@ -325,7 +325,7 @@ function normTask(t) {
     title: str(t.title).slice(0, 500),
     notes: str(t.notes).slice(0, 100000),
     steps: Array.isArray(t.steps)
-      ? t.steps.filter((s) => s && typeof s === 'object').map((s) => ({ id: typeof s.id === 'string' && s.id ? s.id : uid(), text: str(s.text), done: !!s.done }))
+      ? t.steps.filter((s) => s && typeof s === 'object').slice(0, 500).map((s) => ({ id: typeof s.id === 'string' && s.id ? s.id : uid(), text: str(s.text), done: !!s.done }))
       : [],
     done,
     doneAt: done ? (num(t.doneAt) ?? now) : null,
@@ -3073,7 +3073,7 @@ const hexOf = (buf) => Array.from(new Uint8Array(buf), (x) => x.toString(16).pad
 /* ---------- Code de synchronisation : 19 caractères aléatoires + 1 de contrôle (95 bits) ---------- */
 const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // base 32 de Crockford : pas de I, L, O, U
 const syncCode = {
-  check(body) { let s = 0; for (let i = 0; i < body.length; i++) s += (i + 1) * CODE_ALPHABET.indexOf(body[i]); return CODE_ALPHABET[s % 32]; },
+  check(body) { let s = 0; for (let i = 0; i < body.length; i++) s += (2 * i + 1) * CODE_ALPHABET.indexOf(body[i]); return CODE_ALPHABET[s % 32]; },
   create() {
     const r = crypto.getRandomValues(new Uint8Array(19));
     const body = Array.from(r, (x) => CODE_ALPHABET[x & 31]).join('');
@@ -3104,6 +3104,9 @@ const syncCode = {
 function appBaseUrl() { return location.origin + location.pathname.replace(/index\.html$/, ''); }
 function pairUrl(code) { return `${appBaseUrl()}#lien=${code}`; }
 
+/* Données associées au chiffrement : lient le contenu à son identifiant, à sa date et à sa nature
+   (une suppression ou une date ne peuvent pas être fabriquées sans la clé). */
+const aadItem = (id, at, del = false) => `${id}|${at}${del ? '|del' : ''}`;
 const vault = {
   async encrypt(key, value, aad) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -3187,7 +3190,7 @@ const cloud = {
     }
     return data;
   },
-  call(name, args = {}) { return this.rpc(name, { p_key: this.access, ...args }); },
+  call(name, args = {}, K = null) { return this.rpc(name, { p_key: (K || this).access, ...args }); },
 
   /* ---------- jumelage ---------- */
   /* Première synchronisation : cet appareil crée le code. */
@@ -3202,7 +3205,7 @@ const cloud = {
   async join(code) {
     const { access } = await syncCode.keys(code);
     try {
-      await this.rpc('pull_items', { p_key: access, p_since: new Date(Date.now() + 864e5).toISOString() }); // vérifie le code sans rien télécharger
+      await this.rpc('account_info', { p_key: access }); // vérifie le code sans rien télécharger
     } catch (e) {
       if (e.unknown) { const err = new Error('Ce code n\'est pas (ou plus) valable. Affichez le QR code à jour sur un appareil déjà connecté.'); err.badCode = true; throw err; }
       throw e;
@@ -3210,6 +3213,11 @@ const cloud = {
     await this.adopt(code);
   },
   async adopt(code) {
+    clearTimeout(this.timer);
+    await withLock('odj-cloud-sync', async () => { await this._adopt(code); });
+    await this.sync({ first: true });
+  },
+  async _adopt(code) {
     const prev = this.st || this.blank();
     if (prev.code && prev.code !== code && prev.pushWanted && !prev.dead) { try { await this.unsubscribePush(); } catch (e) { /* hors ligne */ } }
     this.st = { ...this.blank(), code, label: prev.label || deviceLabel(), pushWanted: prev.pushWanted, endpoint: prev.endpoint };
@@ -3217,24 +3225,45 @@ const cloud = {
     await this.applyCode();
     this.status = 'ready';
     this.bind();
-    await this.sync({ first: true });
+  },
+  /* Ce que contient une liste avant de la rejoindre (création, nombre de tâches, appareils). */
+  async info(code) {
+    const { access } = await syncCode.keys(code);
+    try { return await this.rpc('account_info', { p_key: access }); } catch (e) {
+      if (e.unknown) { const err = new Error('Ce code n\'est pas (ou plus) valable. Affichez le QR code à jour sur un appareil déjà connecté.'); err.badCode = true; throw err; }
+      throw e;
+    }
   },
   /* Nouveau code : les autres appareils sont déconnectés (appareil perdu, code partagé par erreur). */
   async changeCode() {
-    const oldAccess = this.access;
-    await this.sync(); // récupère d'abord les dernières modifications
-    if (this.status !== 'ready') throw new Error(this.status === 'offline' ? 'Pas de connexion au serveur : réessayez une fois en ligne.' : this.error || 'Synchronisation impossible pour le moment.');
-    const code = syncCode.create();
-    const { access } = await syncCode.keys(code);
-    await this.rpc('create_account', { p_key: access });
-    const keep = { pushWanted: this.st.pushWanted, label: this.st.label };
-    this.st = { ...this.blank(), code, ...keep };
-    this.save();
-    await this.applyCode();
-    await this.sync();
-    if (this.status !== 'ready') throw new Error('Le nouveau code est créé, mais l\'envoi des tâches n\'a pas abouti : réessayez.');
-    await this.rpc('delete_account', { p_key: oldAccess }).catch((e) => console.warn('Ancien code', e));
-    return code;
+    clearTimeout(this.timer);
+    this.running = true;
+    try {
+      return await withLock('odj-cloud-sync', async () => {
+        await this._sync({ retireOk: false }); // récupère d'abord les dernières modifications
+        if (this.status !== 'ready') throw new Error(this.status === 'offline' ? 'Pas de connexion au serveur : réessayez une fois en ligne.' : this.error || 'Synchronisation impossible pour le moment.');
+        const oldAccess = this.access;
+        const code = syncCode.create();
+        const { access } = await syncCode.keys(code);
+        await this.rpc('create_account', { p_key: access });
+        // L'ancien code sera retiré dès que tout aura été envoyé avec le nouveau (réessayé tant que nécessaire).
+        const keep = { pushWanted: this.st.pushWanted, label: this.st.label, retire: [...(this.st.retire || []), oldAccess] };
+        this.st = { ...this.blank(), code, ...keep };
+        this.save();
+        await this.applyCode();
+        await this._sync();
+        return code;
+      });
+    } finally { this.running = false; if (this.again) { this.again = false; this.schedule(); } }
+  },
+  /* Retire définitivement les anciens codes (après « Changer de code »). */
+  async retireOld(K) {
+    const list = (this.st.retire || []).filter((a) => a !== K.access);
+    for (const a of list) {
+      try { await this.rpc('delete_account', { p_key: a }); } catch (e) { console.warn('Ancien code : nouvel essai à la prochaine synchronisation', e); return; }
+      this.st.retire = (this.st.retire || []).filter((x) => x !== a);
+      this.save();
+    }
   },
   async disconnect() {
     try { await this.unsubscribePush(); } catch (e) { /* hors ligne : tant pis */ }
@@ -3260,7 +3289,7 @@ const cloud = {
     this.running = true;
     try { await withLock('odj-cloud-sync', () => this._sync(opts)); } finally { this.running = false; if (this.again) { this.again = false; this.schedule(); } }
   },
-  async _sync({ first = false } = {}) {
+  async _sync({ first = false, retireOk = true } = {}) {
     // une autre fenêtre a pu avancer (ou changer de code) : on repart de l'état partagé
     try {
       const fresh = JSON.parse(lsGet(KEY_CLOUD) || 'null');
@@ -3271,19 +3300,25 @@ const cloud = {
       } else if (fresh && !fresh.code && this.st.code) { this.st = this.blank(); this.key = null; this.status = 'off'; renderStatus(); return; }
     } catch (e) { /* ignore */ }
     if (!this.key || !this.isOn()) return;
+    // clés figées pour toute la durée de la synchronisation (un changement de code ailleurs ne les mélange pas)
+    const K = { code: this.st.code, access: this.access, key: this.key };
     const prev = this.status;
     this.status = 'syncing'; if (prev !== 'ready') renderStatus();
     try {
-      await this.pull();
-      await this.push();
-      await this.pushReminders();
+      await this.pull(K);
+      await this.push(K);
+      await this.pushReminders(K);
       await this.ensurePush();
+      if (retireOk) await this.retireOld(K);
       this.status = 'ready'; this.error = ''; this.backoff = 0; this.lastOk = Date.now();
       this.st.lastSync = this.lastOk; this.save();
       if (first && !$('#dlgSync').open) toast('Synchronisation active : vos tâches sont maintenant sur tous vos appareils connectés.', { duration: 7000 });
     } catch (e) {
       console.warn('Synchronisation', e);
-      if (e.unknown) { this.markDead(); return; }
+      if (e.unknown) {
+        if (this.st.code !== K.code) { this.schedule(); return; } // le code a changé pendant la synchronisation : on recommence
+        this.markDead(); return;
+      }
       if (e.offline) this.status = 'offline';
       else { this.status = 'error'; this.error = e.message || String(e); }
       this.backoff = Math.min(300000, (this.backoff || 5000) * 2);
@@ -3292,15 +3327,15 @@ const cloud = {
       renderStatus(); refreshSettings();
     }
   },
-  async pull() {
+  async pull(K) {
     // léger recouvrement pour ne rien rater (écritures simultanées) ; la fusion rend les doublons sans effet
     const since = this.st.cursor ? new Date(Date.parse(this.st.cursor) - 30000).toISOString() : null;
     const rows = [];
-    let page = await this.call('pull_items', since ? { p_since: since, p_after_id: '' } : {});
+    let page = await this.call('pull_items', since ? { p_since: since, p_after_id: '' } : {}, K);
     rows.push(...page);
     while (page.length === 500) {
       const last = page[page.length - 1];
-      page = await this.call('pull_items', { p_since: last.modified_at, p_after_id: last.id });
+      page = await this.call('pull_items', { p_since: last.modified_at, p_after_id: last.id }, K);
       rows.push(...page);
     }
     if (!rows.length) return;
@@ -3308,9 +3343,15 @@ const cloud = {
     let settings = null, maxMod = this.st.cursor || '';
     for (const r of rows) {
       if (!maxMod || Date.parse(r.modified_at) > Date.parse(maxMod)) maxMod = r.modified_at;
-      if (r.deleted) { if (r.id !== SETTINGS_ITEM) deleted[r.id] = Number(r.updated_at); continue; }
+      const at = Number(r.updated_at);
+      if (r.deleted) {
+        // une suppression n'est prise en compte que si elle a été chiffrée par un appareil de la liste
+        try { await vault.decrypt(K.key, r.data, aadItem(r.id, at, true)); } catch (e) { console.warn('Suppression non authentifiée ignorée', r.id); continue; }
+        if (r.id !== SETTINGS_ITEM) deleted[r.id] = at;
+        continue;
+      }
       let v;
-      try { v = await vault.decrypt(this.key, r.data, r.id); } catch (e) { console.warn('Élément illisible', r.id); continue; }
+      try { v = await vault.decrypt(K.key, r.data, aadItem(r.id, at)); } catch (e) { console.warn('Élément illisible', r.id); continue; }
       if (r.id === SETTINGS_ITEM) { settings = { at: Number(r.updated_at), v }; continue; }
       const t = normTask(v);
       if (t && t.id === r.id) tasks.push(t);
@@ -3321,7 +3362,7 @@ const cloud = {
     if (changed) { state.tasks = m.tasks; }
     state.deleted = m.deleted;
     for (const r of rows) {
-      if (r.deleted) { this.st.delPushed[r.id] = Number(r.updated_at); continue; }
+      if (r.deleted) { if (deleted[r.id] === Number(r.updated_at)) this.st.delPushed[r.id] = Number(r.updated_at); continue; }
       const t = byId(r.id);
       if (t && t.updatedAt === Number(r.updated_at)) this.st.pushed[r.id] = t.updatedAt;
     }
@@ -3343,24 +3384,24 @@ const cloud = {
       reminders.refresh();
     }
   },
-  async push() {
+  async push(K) {
     const rows = [];
     for (const t of state.tasks) {
       if (this.st.pushed[t.id] === t.updatedAt) continue;
-      rows.push({ id: t.id, updated_at: t.updatedAt, deleted: false, data: await vault.encrypt(this.key, t, t.id) });
+      rows.push({ id: t.id, updated_at: t.updatedAt, deleted: false, data: await vault.encrypt(K.key, t, aadItem(t.id, t.updatedAt)) });
     }
     for (const [id, at] of Object.entries(state.deleted)) {
       if (this.st.delPushed[id] === at) continue;
-      rows.push({ id, updated_at: at, deleted: true, data: null });
+      rows.push({ id, updated_at: at, deleted: true, data: await vault.encrypt(K.key, { deleted: true }, aadItem(id, at, true)) });
     }
     const sAt = state.settingsAt || 0;
     if (sAt && this.st.settingsPushed !== sAt) {
       const v = {}; for (const k of SYNCED_SETTINGS) v[k] = state.settings[k];
-      rows.push({ id: SETTINGS_ITEM, updated_at: sAt, deleted: false, data: await vault.encrypt(this.key, v, SETTINGS_ITEM) });
+      rows.push({ id: SETTINGS_ITEM, updated_at: sAt, deleted: false, data: await vault.encrypt(K.key, v, aadItem(SETTINGS_ITEM, sAt)) });
     }
     const rejected = [];
     const send = async (batch) => {
-      const res = await this.call('push_items', { p_rows: batch });
+      const res = await this.call('push_items', { p_rows: batch }, K);
       const rej = new Set((res && res.rejected) || []);
       for (const r of batch) {
         if (rej.has(r.id)) { rejected.push(r.id); continue; }
@@ -3378,24 +3419,25 @@ const cloud = {
         for (const r of batch) { try { await send([r]); } catch (e2) { if (e2.unknown || e2.offline) throw e2; console.warn('Élément non envoyé', r.id, e2); this.skipped = r.id; } }
       }
     }
-    if (rejected.length) await this.fetchServerVersions(rejected);
+    if (rejected.length) await this.fetchServerVersions(rejected, K);
   },
   /* Le serveur avait une version plus récente (autre appareil, horloge différente) : elle remplace la nôtre. */
-  async fetchServerVersions(ids) {
+  async fetchServerVersions(ids, K) {
     const list = ids.filter((id) => id !== SETTINGS_ITEM);
     if (ids.includes(SETTINGS_ITEM)) this.st.cursor = null; // relire les réglages au prochain passage
     for (let i = 0; i < list.length; i += 100) {
-      const rows = await this.call('get_items', { p_ids: list.slice(i, i + 100) });
+      const rows = await this.call('get_items', { p_ids: list.slice(i, i + 100) }, K);
       let changed = false;
       for (const r of rows) {
         const at = Number(r.updated_at), local = byId(r.id);
         if (r.deleted) {
+          try { await vault.decrypt(K.key, r.data, aadItem(r.id, at, true)); } catch (e) { continue; }
           if (local) { state.tasks = state.tasks.filter((x) => x.id !== r.id); changed = true; }
           state.deleted[r.id] = at; this.st.delPushed[r.id] = at; delete this.st.pushed[r.id];
           continue;
         }
         let t;
-        try { t = normTask(await vault.decrypt(this.key, r.data, r.id)); } catch (e) { continue; }
+        try { t = normTask(await vault.decrypt(K.key, r.data, aadItem(r.id, at))); } catch (e) { continue; }
         if (!t) continue;
         if (local) Object.assign(local, t); else { state.tasks.push(t); }
         delete state.deleted[r.id];
@@ -3411,14 +3453,14 @@ const cloud = {
     }
   },
   /* Les prochains rappels, pour que le serveur les envoie même appareils éteints. Le texte est chiffré. */
-  async pushReminders() {
+  async pushReminders(K) {
     const list = state.tasks.map((t) => [t, serverFireAt(t)]).filter(([, n]) => n)
       .sort((a, b) => a[1] - b[1]).slice(0, 300);
     const sig = JSON.stringify(list.map(([t, n]) => [t.id, n, t.title, notifBody(t)]));
     if (sig === this.st.remSig) return;
     const rows = [];
-    for (const [t, n] of list) rows.push({ task_id: t.id, fire_at: n, payload: await vault.encrypt(this.key, { title: truncate(t.title || 'Rappel', 140), body: truncate(notifBody(t), 240) }, `rem:${t.id}`) });
-    await this.call('set_reminders', { p_rows: rows });
+    for (const [t, n] of list) rows.push({ task_id: t.id, fire_at: n, payload: await vault.encrypt(K.key, { title: truncate(t.title || 'Rappel', 140), body: truncate(notifBody(t), 240) }, `rem:${t.id}`) });
+    await this.call('set_reminders', { p_rows: rows }, K);
     this.st.remSig = sig; this.save();
   },
 
@@ -3504,30 +3546,37 @@ function deviceLabel() {
 
 /* ---------- Scanner de QR code (appareil photo, dans l'application) ---------- */
 const scanner = {
-  stream: null, raf: null, busy: false, detector: null, jsqrLoading: null,
+  stream: null, raf: null, busy: false, detector: null, jsqrLoading: null, gen: 0,
   async start(video, onCode, onState) {
     this.stop();
+    const gen = ++this.gen;
+    const alive = () => gen === this.gen && video.isConnected;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { onState('nocam'); return; }
+    let stream;
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
     } catch (e) {
-      onState(e && (e.name === 'NotAllowedError' || e.name === 'SecurityError') ? 'denied' : 'nocam');
+      if (alive()) onState(e && (e.name === 'NotAllowedError' || e.name === 'SecurityError') ? 'denied' : 'nocam');
       return;
     }
-    if (!video.isConnected) { this.stop(); return; }
-    video.srcObject = this.stream;
+    // fenêtre fermée (Échap…) pendant l'ouverture de la caméra : on l'éteint aussitôt
+    if (!alive()) { for (const t of stream.getTracks()) t.stop(); return; }
+    this.stream = stream;
+    video.srcObject = stream;
     video.setAttribute('playsinline', ''); video.muted = true;
     try { await video.play(); } catch (e) { /* lecture automatique : relancée au premier geste */ }
+    if (!alive()) return;
     onState('live');
-    if ('BarcodeDetector' in window) {
+    if (!this.detector && 'BarcodeDetector' in window) {
       try { const f = await BarcodeDetector.getSupportedFormats(); if (f.includes('qr_code')) this.detector = new BarcodeDetector({ formats: ['qr_code'] }); } catch (e) { this.detector = null; }
     }
-    if (!this.detector) await this.loadJsqr().catch(() => onState('nolib'));
+    if (!this.detector) await this.loadJsqr().catch(() => { if (alive()) onState('nolib'); });
+    if (!alive()) return;
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     let last = 0;
     const tick = async (ts) => {
-      if (!this.stream) return;
+      if (gen !== this.gen || !this.stream) return;
       this.raf = requestAnimationFrame(tick);
       if (this.busy || ts - last < 150 || video.readyState < 2) return;
       last = ts; this.busy = true;
@@ -3545,7 +3594,7 @@ const scanner = {
           const res = self.jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
           if (res) text = res.data;
         }
-        if (text && this.stream) onCode(text);
+        if (text && gen === this.gen && this.stream) onCode(text);
       } catch (e) { /* image suivante */ } finally { this.busy = false; }
     };
     this.raf = requestAnimationFrame(tick);
@@ -3562,6 +3611,7 @@ const scanner = {
     return this.jsqrLoading;
   },
   stop() {
+    this.gen++;
     cancelAnimationFrame(this.raf); this.raf = null;
     if (this.stream) { for (const t of this.stream.getTracks()) t.stop(); this.stream = null; }
   },
@@ -3596,14 +3646,15 @@ const syncUi = {
           <button type="button" class="choiceBtn" data-sync="scan">${icon('camera')}<span><strong>Un autre appareil est déjà synchronisé</strong><small>Scanner son QR code ou saisir son code</small></span></button>
         </div>`,
       show: code ? `<div class="pair">
-          <div class="qr big" id="syncQr" role="img" aria-label="QR code de synchronisation"></div>
+          <div class="qrWrap" id="syncQrWrap"><div class="qr big" id="syncQr" role="img" aria-label="QR code de synchronisation"></div>
+            <button type="button" class="qrMask" data-sync="reveal" hidden>${icon('qr')}<span>Afficher le QR code</span></button></div>
           <div class="pairText">
             <ol class="steps2">
               <li>Sur l'autre appareil, ouvrez To do list et touchez <strong>Scanner le QR code</strong>.</li>
               <li>Visez ce code. C'est tout.</li>
             </ol>
             <p class="fHint">Application pas encore installée sur le téléphone ? Scannez ce code avec son appareil photo : il ouvre To do list et le connecte.</p>
-            <p class="codeLine">Ou saisissez : <code class="syncCode">${esc(syncCode.format(code))}</code> <button type="button" class="linkBtn" data-sync="copy">${icon('copy')}Copier</button></p>
+            <p class="codeLine">Ou saisissez : <code class="syncCode" id="syncCodeTxt">${esc(syncCode.format(code))}</code> <button type="button" class="linkBtn" data-sync="copy">${icon('copy')}Copier</button></p>
             <p class="fHint warnHint">${icon('alert')}Ce code donne accès à vos tâches : ne le montrez qu'à vos propres appareils.</p>
           </div>
         </div>${pushBlockHTML()}` : '',
@@ -3616,7 +3667,8 @@ const syncUi = {
       confirm: this.pending ? `<p class="setText">${cloud.isOn() && cloud.st.code !== this.pending
           ? 'Cet appareil est déjà synchronisé avec une autre liste. Le connecter à celle-ci ? Ses tâches actuelles y seront ajoutées.'
           : 'Connecter cet appareil à votre liste synchronisée ? Les tâches déjà présentes ici y seront ajoutées.'}</p>
-        <p class="fHint warnHint">${icon('alert')}Ne continuez que si ce QR code vient de l'un de vos propres appareils.</p>` : '',
+        <div class="listInfo" id="syncInfo" aria-live="polite"><span class="spin" aria-hidden="true"></span>Vérification de la liste…</div>
+        <p class="fHint warnHint">${icon('alert')}Ne continuez que si ce QR code vient de l'un de vos propres appareils : quelqu'un d'autre pourrait lire les tâches que vous y ajouterez.</p>` : '',
       ios: `<p class="setText">Pour recevoir les rappels en notification sur iPhone, To do list doit être installée sur l'écran d'accueil :</p>
         <ol class="steps2"><li>Touchez le bouton <strong>Partager</strong> de Safari (le carré avec une flèche vers le haut).</li>
         <li>Choisissez <strong>« Sur l'écran d'accueil »</strong>, puis Ajouter.</li>
@@ -3641,8 +3693,35 @@ const syncUi = {
     $('#syncFoot').innerHTML = `<span class="spin" id="syncSpin" hidden aria-label="En cours"></span>${foot[this.step]}`;
     const first = body.querySelector('input');
     if (first) setTimeout(() => first.focus(), 30);
-    if (this.step === 'show') renderQr(code);
+    clearTimeout(this.maskTimer);
+    if (this.step === 'show') { renderQr(code); this.reveal(true); }
     if (this.step === 'scan') this.startScan();
+    if (this.step === 'confirm' && this.pending) this.loadInfo(this.pending);
+  },
+  async loadInfo(code) {
+    const box = $('#syncInfo');
+    const go = $('#syncFoot [data-sync="join-pending"]');
+    if (go) go.disabled = true;
+    let info;
+    try { info = await cloud.info(code); } catch (e) {
+      if (this.step !== 'confirm' || this.pending !== code) return;
+      if (e.badCode) { this.step = 'enter'; this.render(); this.fail(e); return; }
+      if (box) box.textContent = 'Impossible de vérifier la liste pour le moment.';
+      if (go) go.disabled = false;
+      return;
+    }
+    if (this.step !== 'confirm' || this.pending !== code || !box) return;
+    box.innerHTML = listInfoHTML(info);
+    if (go) go.disabled = false;
+  },
+  /* Le QR code et le code se masquent seuls après 2 minutes (fenêtre restée ouverte, écran partagé…). */
+  reveal(on) {
+    const w = $('#syncQrWrap'); if (!w) return;
+    w.classList.toggle('masked', !on);
+    w.querySelector('.qrMask').hidden = on;
+    const c = $('#syncCodeTxt'); if (c) c.classList.toggle('masked', !on);
+    clearTimeout(this.maskTimer);
+    if (on) this.maskTimer = setTimeout(() => this.reveal(false), 120000);
   },
   startScan() {
     const video = $('#scanVideo'), state = $('#scanState');
@@ -3663,8 +3742,8 @@ const syncUi = {
   async joinWith(code) {
     this.pending = code;
     if (cloud.isOn() && cloud.st.code === code) { this.step = 'show'; this.render(); toast('Cet appareil est déjà connecté à cette liste.'); return; }
-    this.step = 'confirm'; this.render();
-    if (!(cloud.isOn() && cloud.st.code !== code)) await this.act('join-pending'); // rien à confirmer : on connecte
+    if (!cloud.isOn() && !state.tasks.length) { this.step = 'confirm'; this.render(); await this.act('join-pending'); return; } // rien à protéger : on connecte
+    this.step = 'confirm'; this.render(); // des tâches seraient envoyées : on montre d'abord la liste visée
   },
   async act(a) {
     const msg = $('#syncMsg'); if (msg) msg.hidden = true;
@@ -3688,7 +3767,9 @@ const syncUi = {
         await this.act('join-pending');
         return;
       }
-      if (a === 'join-pending' || a === 'ios-anyway') {
+      if (a === 'reveal') { this.reveal(true); return; }
+      if (a === 'ios-anyway') { this.step = 'confirm'; this.render(); return; }
+      if (a === 'join-pending') {
         if (!this.pending) return;
         this.busy(true);
         await cloud.join(this.pending);
@@ -3701,7 +3782,8 @@ const syncUi = {
         this.busy(true);
         await cloud.changeCode();
         this.step = 'show'; this.render();
-        toast('Nouveau code créé. Les autres appareils doivent scanner ce nouveau QR code.', { duration: 9000 });
+        toast(cloud.status === 'ready' ? 'Nouveau code créé. Les autres appareils doivent scanner ce nouveau QR code.'
+          : 'Nouveau code créé. L\'envoi des tâches reprendra automatiquement ; l\'ancien code sera retiré ensuite.', { duration: 9000 });
         return;
       }
       if (a === 'push') { await cloud.enablePush(); this.render(); return; }
@@ -3724,6 +3806,17 @@ const syncUi = {
     this.open('confirm');
   },
 };
+function listInfoHTML(info) {
+  const n = Number(info && info.tasks) || 0, d = Number(info && info.devices) || 0;
+  const created = info && info.created_at ? new Date(info.created_at) : null;
+  const when = created && !isNaN(created) ? created.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+  const parts = [
+    when ? `Liste créée le <strong>${esc(when)}</strong>` : 'Liste synchronisée',
+    n ? `<strong>${n}</strong> tâche${n > 1 ? 's' : ''}` : 'aucune tâche pour l\'instant',
+    d ? `notifications sur <strong>${d}</strong> appareil${d > 1 ? 's' : ''}` : '',
+  ].filter(Boolean);
+  return `${icon('sync')}<span>${parts.join(' · ')}</span>`;
+}
 function pushBlockHTML() {
   if (!cloud.isOn() || !cloud.key) return '';
   if (cloud.needsIosInstall()) {

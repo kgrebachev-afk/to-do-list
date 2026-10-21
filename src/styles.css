@@ -758,6 +758,19 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
 .scanFrame { position: absolute; left: 50%; top: 50%; width: min(62%, 260px); aspect-ratio: 1; transform: translate(-50%, -54%); border-radius: 16px; box-shadow: 0 0 0 2000px rgba(0, 0, 0, .35); outline: 3px solid rgba(255, 255, 255, .9); }
 .scanState { position: absolute; left: 12px; right: 12px; bottom: 10px; margin: 0; padding: 7px 10px; border-radius: 8px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 13.5px; text-align: center; }
 .codeInput { font: 600 18px/1 var(--ff-c); letter-spacing: .08em; text-transform: uppercase; }
+.qrWrap { position: relative; }
+.qrWrap .qr { overflow: hidden; }
+.qrWrap.masked .qr svg { filter: blur(14px); opacity: .35; }
+.qrMask { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font: 600 15px/1.2 var(--ff-c); cursor: pointer; }
+.qrMask[hidden] { display: none; }
+.qrMask .ic { width: 26px; height: 26px; color: var(--accent); }
+.qrMask span { padding: 5px 10px; border-radius: 999px; background: var(--raise); box-shadow: 0 1px 3px rgba(0, 0, 0, .15); }
+.qrMask:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.syncCode.masked { filter: blur(5px); user-select: none; }
+.listInfo { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); font-size: 14.5px; color: var(--ink-2); }
+.listInfo .ic { width: 18px; height: 18px; flex: none; color: var(--accent); margin-top: 1px; }
+.listInfo strong { color: var(--ink); }
+.listInfo .spin { flex: none; margin: 1px 0 0; width: 16px; height: 16px; }
 @media (max-width: 600px) {
   .pair { grid-template-columns: minmax(0, 1fr); justify-items: center; }
   .qr.big { display: block; width: 200px; height: 200px; }
