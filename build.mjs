@@ -3,7 +3,7 @@
 //   dist/web/              version installable (GitHub Pages) : même page + manifeste, service worker, icônes
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const src = (p) => new URL(`./src/${p}`, import.meta.url);
 const out = (p) => new URL(`./dist/${p}`, import.meta.url);
 const b64 = (p) => readFileSync(src(`fonts/${p}`)).toString('base64');

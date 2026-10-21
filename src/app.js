@@ -16,7 +16,7 @@ const KEY_BACKUP = 'odj.backup.v1';
 const MAX_UNDO = 100;
 const MAX_SNAPS = 7;
 
-const DEFAULT_SETTINGS = Object.freeze({ theme: 'auto', addTo: 'bottom', holidays: true, doneTodayOpen: false, remindTime: '09:00', remindSound: true, remindSticky: true });
+const DEFAULT_SETTINGS = Object.freeze({ theme: 'auto', addTo: 'bottom', holidays: true, doneTodayOpen: false, urgentDays: 2, remindTime: '09:00', remindSound: true, remindSticky: true });
 
 /* ---------- Utilitaires ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -262,6 +262,42 @@ function shiftDue(t, v) {
   if (t.remind && old && v && old !== v) t.remind = makeRemind(addDays(t.remind.date, diffDays(v, old)), t.remind.time);
 }
 
+/* ---------- Matrice urgent / important ----------
+   matrix = { important: true | false | null, urgent: true | false | null }
+   important null : pas encore classée. urgent null : automatique, selon l'échéance. */
+const triBool = (v) => (v === true || v === false ? v : null);
+function normMatrix(m) {
+  if (!m || typeof m !== 'object') return { important: null, urgent: null };
+  return { important: triBool(m.important), urgent: triBool(m.urgent) };
+}
+function autoUrgent(t) {
+  if (remindRinging(t)) return true;
+  return !!(t.due && diffDays(t.due, todayISO()) <= state.settings.urgentDays);
+}
+const isUrgent = (t) => (t.matrix.urgent !== null ? t.matrix.urgent : autoUrgent(t));
+/* q1 urgent et important, q2 important, q3 urgent, q4 ni l'un ni l'autre, inbox à classer */
+function quadrantOf(t) {
+  if (t.matrix.important === null) return 'inbox';
+  const u = isUrgent(t);
+  if (t.matrix.important) return u ? 'q1' : 'q2';
+  return u ? 'q3' : 'q4';
+}
+const QUADS = {
+  q1: { title: 'Urgent et important', sub: 'À faire maintenant', important: true, urgent: true },
+  q2: { title: 'Important, pas urgent', sub: 'À planifier', important: true, urgent: false },
+  q3: { title: 'Urgent, pas important', sub: 'À expédier ou déléguer', important: false, urgent: true },
+  q4: { title: 'Ni urgent ni important', sub: 'Plus tard, ou à abandonner', important: false, urgent: false },
+};
+/* Place une tâche dans un cadran. Si l'urgence voulue correspond à l'automatique, on garde l'automatique :
+   une tâche « à planifier » deviendra urgente d'elle-même quand son échéance approchera. */
+function setQuadrant(t, q) {
+  if (q === 'inbox') { t.matrix = { important: null, urgent: null }; return; }
+  const want = QUADS[q];
+  t.matrix = { important: want.important, urgent: want.urgent === autoUrgent(t) ? null : want.urgent };
+}
+const matrixActive = () => ui.view === 'matrix' && !ui.query.trim();
+const overlayMode = () => isNarrow() || matrixActive();
+
 /* ---------- État ---------- */
 let state = { tasks: [], settings: { ...DEFAULT_SETTINGS }, savedAt: 0, deleted: {} };
 const ui = {
@@ -298,6 +334,7 @@ function normTask(t) {
     spawnedId: typeof t.spawnedId === 'string' ? t.spawnedId : null,
     seriesId: typeof t.seriesId === 'string' && t.seriesId ? t.seriesId : null,
     remind: normRemind(t.remind),
+    matrix: normMatrix(t.matrix),
   };
 }
 function normData(d) {
@@ -318,6 +355,7 @@ function normData(d) {
   if (typeof s.holidays === 'boolean') settings.holidays = s.holidays;
   if (typeof s.doneTodayOpen === 'boolean') settings.doneTodayOpen = s.doneTodayOpen;
   if (isHM(s.remindTime)) settings.remindTime = s.remindTime;
+  if ([0, 1, 2, 3, 5, 7].includes(s.urgentDays)) settings.urgentDays = s.urgentDays;
   if (typeof s.remindSound === 'boolean') settings.remindSound = s.remindSound;
   if (typeof s.remindSticky === 'boolean') settings.remindSticky = s.remindSticky;
   // suppressions récentes (60 jours), pour qu'une fusion ne fasse pas réapparaître une tâche supprimée
@@ -541,6 +579,7 @@ function completeTask(t) {
     createdAt: now, updatedAt: now, spawnedId: null,
     seriesId: t.seriesId || t.id,
     remind: null,
+    matrix: { important: t.matrix.important, urgent: null },
   });
   if (t.remind) {
     const off = t.due ? diffDays(t.remind.date, t.due) : 0;
@@ -678,6 +717,10 @@ function buildSections() {
   if (ui.view === 'today') {
     return [{ id: 'today', items: openSorted().filter(inToday), ranked: true, sortable: true }];
   }
+  if (ui.view === 'matrix') {
+    const open = openSorted();
+    return ['q1', 'q2', 'q3', 'q4', 'inbox'].map((q) => ({ id: q, items: open.filter((t) => quadrantOf(t) === q) }));
+  }
   // Terminées, par semaine
   const groups = new Map();
   for (const t of doneSorted()) {
@@ -710,7 +753,13 @@ function navOrder(sections = buildSections()) {
 const els = {};
 function render(opts = {}) {
   renderHeader();
-  renderList();
+  if (typeof pwa !== 'undefined' && els.status) pwa.render();
+  const m = matrixActive();
+  els.app.classList.toggle('matrixMode', m);
+  els.matrix.hidden = !m;
+  els.scroll.hidden = m;
+  if (m) { els.list.innerHTML = ''; renderMatrix(); } else { els.matrix.innerHTML = ''; renderList(); }
+  if (!overlayMode() && els.app.classList.contains('detailOpen')) els.app.classList.remove('detailOpen');
   if (opts.detail !== false) renderDetail();
   renderStatus();
 }
@@ -725,6 +774,10 @@ function renderHeader() {
   els.countToday.textContent = dueNow.length || '';
   els.countToday.className = `count${dueNow.length ? (late ? ' late' : ' hot') : ''}`;
   els.countToday.title = late ? 'Certaines échéances sont dépassées' : '';
+  const q1 = open.filter((t) => quadrantOf(t) === 'q1').length;
+  els.countMatrix.textContent = q1 || '';
+  els.countMatrix.className = `count${q1 ? ' hot' : ''}`;
+  els.countMatrix.title = q1 ? `${plural(q1, 'tâche urgente et importante', 'tâches urgentes et importantes')}` : '';
   for (const b of $$('.views [role="tab"]')) {
     const on = !ui.query.trim() && b.dataset.view === ui.view;
     b.setAttribute('aria-selected', String(on));
@@ -845,13 +898,17 @@ function renderList() {
   if (i >= 0) ui.lastIndex = i;
 }
 function markSelection() {
-  for (const r of $$('.row', els.list)) {
+  for (const r of [...$$('.row', els.list), ...$$('.mcard', els.matrix)]) {
     const on = r.dataset.id === ui.selectedId;
     r.classList.toggle('sel', on);
     if (on) r.setAttribute('aria-current', 'true'); else r.removeAttribute('aria-current');
   }
 }
-function rowEl(id) { return id ? els.list.querySelector(`.row[data-id="${CSS.escape(id)}"]`) : null; }
+function rowEl(id) {
+  if (!id) return null;
+  const sel = `[data-id="${CSS.escape(id)}"]`;
+  return matrixActive() ? els.matrix.querySelector(`.mcard${sel}`) : els.list.querySelector(`.row${sel}`);
+}
 
 /* ---------- Sélection ---------- */
 function select(id, { open = false, scroll = true } = {}) {
@@ -863,7 +920,7 @@ function select(id, { open = false, scroll = true } = {}) {
   markSelection();
   renderDetail();
   if (scroll) { const r = rowEl(id); if (r) r.scrollIntoView({ block: 'nearest' }); }
-  if (open && isNarrow()) openOverlay();
+  if (open && overlayMode()) openOverlay();
 }
 function selectIndex(i, opts = {}) {
   const ids = navOrder();
@@ -880,15 +937,172 @@ function moveSelection(delta) {
 function openOverlay() {
   if (els.app.classList.contains('detailOpen')) return;
   els.app.classList.add('detailOpen');
+  els.scrim.hidden = !matrixActive() || isNarrow();
   try { history.pushState({ odjDetail: true }, ''); } catch (e) { /* file:// peut refuser */ }
 }
 function closeOverlay({ fromPop = false } = {}) {
   if (!els.app.classList.contains('detailOpen')) return;
   els.app.classList.remove('detailOpen');
+  els.scrim.hidden = true;
   if (!fromPop && history.state && history.state.odjDetail) { try { history.back(); } catch (e) { /* ignore */ } }
   const r = rowEl(ui.selectedId);
   if (r) r.scrollIntoView({ block: 'nearest' });
-  els.list.focus({ preventScroll: true });
+  if (matrixActive()) { if (r) r.focus({ preventScroll: true }); } else els.list.focus({ preventScroll: true });
+}
+
+/* =====================================================================
+   Matrice urgent / important
+   ===================================================================== */
+function mcardHTML(t, i, q) {
+  const meta = [];
+  if (t.due) { const d = dueInfo(t.due); meta.push(`<span class="chip ${d.cls}" title="${esc(d.title)}">${t.repeat ? icon('repeat') : ''}${esc(d.text)}</span>`); }
+  if (remindRinging(t)) meta.push(`<span class="chip ring">${icon('bell')}Rappel</span>`);
+  else { const nx = remindNext(t); if (nx) meta.push(`<span class="chip rem" title="Rappel ${esc(fmtWhenLong(nx))}">${icon('bell')}${esc(fmtWhen(nx))}</span>`); }
+  if (t.steps.length) { const n = t.steps.filter((s) => s.done).length; meta.push(`<span class="chip${n === t.steps.length ? ' ok' : ''}">${icon('steps')}${n}/${t.steps.length}</span>`); }
+  if (t.matrix.urgent !== null && q !== 'inbox') meta.push(`<span class="chip forced" title="Urgence fixée à la main">${t.matrix.urgent ? 'Urgence forcée' : 'Non urgent forcé'}</span>`);
+  const triage = q === 'inbox'
+    ? `<span class="triage"><button type="button" class="pill" data-tri="true" title="Important (I)">Important</button><button type="button" class="pill" data-tri="false" title="Pas important">Pas important</button></span>`
+    : '';
+  return `<div class="mcard${t.id === ui.selectedId ? ' sel' : ''}" draggable="true" tabindex="-1" role="listitem" data-id="${esc(t.id)}"${t.id === ui.selectedId ? ' aria-current="true"' : ''}>
+    <span class="mnum" aria-hidden="true">${i + 1}</span>
+    <label class="check"><input type="checkbox" aria-label="${esc(`Terminer : ${t.title || 'Sans titre'}`)}" tabindex="-1"><span class="box"><svg viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></svg></span></label>
+    <div class="mbody"><div class="mtitle">${t.title ? esc(t.title) : '<span class="untitled">Sans titre</span>'}</div>${meta.length ? `<div class="mmeta">${meta.join('')}</div>` : ''}${triage}</div>
+  </div>`;
+}
+function quadHTML(q, items) {
+  const Q = QUADS[q];
+  const empty = {
+    q1: 'Rien d\'urgent et important. Profitez-en pour avancer sur le cadran « à planifier ».',
+    q2: 'Les tâches importantes sans urgence : planifiez-les avant qu\'elles ne deviennent urgentes.',
+    q3: 'Les tâches urgentes mais peu importantes : faites-les vite, ou déléguez-les.',
+    q4: 'Ni urgent ni important : à garder pour plus tard, ou à supprimer.',
+  }[q];
+  return `<section class="quad ${q}" data-drop="${q}" aria-labelledby="h-${q}">
+    <header class="qhead"><h2 id="h-${q}">${esc(Q.title)}</h2><span class="qsub">${esc(Q.sub)}</span><span class="grow"></span><span class="qn">${items.length || ''}</span></header>
+    <div class="qbody" role="list">${items.length ? items.map((t, i) => mcardHTML(t, i, q)).join('') : `<p class="qempty">${empty}</p>`}</div>
+  </section>`;
+}
+function renderMatrix() {
+  const open = openSorted();
+  const by = { q1: [], q2: [], q3: [], q4: [], inbox: [] };
+  for (const t of open) by[quadrantOf(t)].push(t);
+  const scrolls = {};
+  for (const b of $$('[data-drop]', els.matrix)) { const body = b.querySelector('.qbody'); if (body) scrolls[b.dataset.drop] = body.scrollTop; }
+  if (!open.length) {
+    els.matrix.innerHTML = '<div class="empty"><h2>Aucune tâche à classer</h2><p>Ajoutez des tâches : elles arrivent dans « À classer », puis vous indiquez si elles sont importantes. L\'urgence se déduit de l\'échéance.</p></div>';
+    els.matrix.classList.remove('hasInbox');
+    return;
+  }
+  const inbox = by.inbox.length ? `<aside class="inbox" data-drop="inbox" aria-labelledby="h-inbox">
+      <header class="qhead"><h2 id="h-inbox">À classer</h2><span class="grow"></span><span class="qn">${by.inbox.length}</span></header>
+      <p class="ihint">Est-ce important ? Cliquez, ou glissez la tâche dans un cadran. L'urgence suit l'échéance.</p>
+      <div class="qbody" role="list">${by.inbox.map((t, i) => mcardHTML(t, i, 'inbox')).join('')}</div>
+    </aside>` : '';
+  els.matrix.classList.toggle('hasInbox', !!by.inbox.length);
+  els.matrix.innerHTML = `${inbox}<div class="grid4">
+      <span class="axis ax-top ax-u">Urgent</span><span class="axis ax-top ax-nu">Pas urgent</span>
+      <span class="axis ax-side ax-i">Important</span><span class="axis ax-side ax-ni">Pas important</span>
+      ${quadHTML('q1', by.q1)}${quadHTML('q2', by.q2)}${quadHTML('q3', by.q3)}${quadHTML('q4', by.q4)}
+    </div>`;
+  for (const [k, v] of Object.entries(scrolls)) { const b = els.matrix.querySelector(`[data-drop="${k}"] .qbody`); if (b) b.scrollTop = v; }
+}
+function focusSelectionHost() {
+  if (matrixActive()) { const r = rowEl(ui.selectedId); if (r) r.focus({ preventScroll: true }); }
+  else els.list.focus({ preventScroll: true });
+}
+const mdrag = { id: null };
+function bindMatrix() {
+  const M = els.matrix;
+  M.addEventListener('click', (e) => {
+    const card = e.target.closest('.mcard');
+    if (!card) return;
+    const t = byId(card.dataset.id);
+    if (!t) return;
+    const tri = e.target.closest('[data-tri]');
+    if (tri) {
+      const v = tri.dataset.tri === 'true';
+      commit(() => { t.matrix.important = v; t.updatedAt = Date.now(); }, { undo: v ? 'Marquée importante' : 'Marquée pas importante' });
+      const q = quadrantOf(t);
+      const el = rowEl(t.id);
+      if (el && !reducedMotion()) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1400); }
+      toast(`Classée dans « ${QUADS[q].title} ».`, { action: 'Annuler', onAction: undo });
+      return;
+    }
+    if (e.target.closest('.check')) return;
+    select(t.id, { open: true, scroll: false });
+  });
+  M.addEventListener('change', (e) => {
+    const cb = e.target;
+    if (cb.type !== 'checkbox') return;
+    const card = cb.closest('.mcard');
+    if (card) toggleFromList(card.dataset.id, cb.checked, card);
+  });
+  M.addEventListener('dragstart', (e) => {
+    const card = e.target.closest('.mcard');
+    if (!card) return;
+    mdrag.id = card.dataset.id;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-todo-task', card.dataset.id);
+    e.dataTransfer.setData('text/plain', (byId(card.dataset.id) || {}).title || '');
+    requestAnimationFrame(() => card.classList.add('dragging'));
+    M.classList.add('isDragging');
+  });
+  const clearMarks = () => {
+    for (const el of $$('.dropBefore, .dropAfter, .dropOn', M)) el.classList.remove('dropBefore', 'dropAfter', 'dropOn');
+  };
+  const target = (e) => {
+    const zone = e.target.closest('[data-drop]');
+    if (!zone) return null;
+    let card = e.target.closest('.mcard');
+    if (card && card.dataset.id === mdrag.id) card = null;
+    let after = false;
+    if (card) { const r = card.getBoundingClientRect(); after = e.clientY > r.top + r.height / 2; }
+    return { zone, card, after };
+  };
+  M.addEventListener('dragover', (e) => {
+    if (!mdrag.id) return;
+    const tg = target(e);
+    if (!tg) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    clearMarks();
+    tg.zone.classList.add('dropOn');
+    if (tg.card) tg.card.classList.add(tg.after ? 'dropAfter' : 'dropBefore');
+  });
+  M.addEventListener('dragleave', (e) => { if (!M.contains(e.relatedTarget)) clearMarks(); });
+  M.addEventListener('drop', (e) => {
+    if (!mdrag.id) return;
+    const tg = target(e);
+    clearMarks();
+    if (!tg) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const t = byId(mdrag.id);
+    if (!t) return;
+    const q = tg.zone.dataset.drop;
+    const before = quadrantOf(t);
+    commit(() => {
+      setQuadrant(t, q);
+      if (tg.card) { // ordre : avant ou après la tâche visée, dans la liste complète
+        const order = openSorted().map((x) => x.id);
+        const rest = order.filter((x) => x !== t.id);
+        const idx = rest.indexOf(tg.card.dataset.id) + (tg.after ? 1 : 0);
+        placeAt(order, t.id, idx);
+      }
+      t.updatedAt = Date.now();
+    }, { undo: before === q ? 'Changement de priorité' : 'Changement de cadran', detail: false });
+    if (byId(ui.selectedId) && ui.selectedId === t.id) updateDetailBits(t);
+    const after = quadrantOf(t);
+    if (after !== q && q !== 'inbox') toast(`L'échéance la place automatiquement dans « ${QUADS[after].title} ».`);
+    const el = rowEl(t.id);
+    if (el && !reducedMotion()) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1400); }
+  });
+  M.addEventListener('dragend', () => {
+    mdrag.id = null;
+    clearMarks();
+    M.classList.remove('isDragging');
+    for (const el of $$('.dragging', M)) el.classList.remove('dragging');
+  });
 }
 
 /* ---------- Déplacement dans la liste ---------- */
@@ -1034,7 +1248,7 @@ function renderDetail() {
     pane.dataset.id = '';
     pane.innerHTML = `<div class="dEmpty"><h2>Aucune tâche sélectionnée</h2><p>Cliquez sur une tâche pour noter ce qu'il faut faire précisément : étapes, contacts, chemins de fichiers.</p>
       <dl><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Parcourir la liste</dd><dt><kbd>Entrée</kbd></dt><dd>Modifier la tâche sélectionnée</dd><dt><kbd>Espace</kbd></dt><dd>Terminer</dd><dt><kbd>?</kbd></dt><dd>Tous les raccourcis</dd></dl></div>`;
-    if (isNarrow()) closeOverlay();
+    if (overlayMode()) closeOverlay();
     return;
   }
   pane.dataset.id = t.id;
@@ -1065,6 +1279,20 @@ function renderDetail() {
         <select id="dRepeat" data-k="repeat">${opts}</select>
         <input type="number" class="field nth" id="dNth" data-k="nth" min="1" max="23" step="1" value="${t.repeat && t.repeat.type === 'nth' ? t.repeat.n : 3}" aria-label="Numéro du jour ouvré" title="Numéro du jour ouvré dans le mois">
         <p class="hint" id="dRepeatHint"></p>
+      </div>
+      <span class="propLabel" id="lblMx">Priorité</span>
+      <div class="propCtl" role="group" aria-labelledby="lblMx">
+        <span class="seg" role="group" aria-label="Importance">
+          <button type="button" class="segBtn" data-imp="true" data-k="imp-yes">Important</button>
+          <button type="button" class="segBtn" data-imp="false" data-k="imp-no">Pas important</button>
+          <button type="button" class="segBtn" data-imp="null" data-k="imp-null">À classer</button>
+        </span>
+        <span class="seg" role="group" aria-label="Urgence">
+          <button type="button" class="segBtn" data-urg="null" data-k="urg-auto">Auto</button>
+          <button type="button" class="segBtn" data-urg="true" data-k="urg-yes">Urgent</button>
+          <button type="button" class="segBtn" data-urg="false" data-k="urg-no">Pas urgent</button>
+        </span>
+        <p class="hint" id="dMxHint"></p>
       </div>
       <span class="propLabel" id="lblRem">Rappel</span>
       <div class="propCtl" role="group" aria-labelledby="lblRem">
@@ -1140,6 +1368,7 @@ function updateDetailBits(t) {
   } else rh.textContent = '';
 
   updateRemindBits(t);
+  updateMatrixBits(t);
 
   const n = t.steps.filter((s) => s.done).length;
   $('#dStepsN', pane).textContent = t.steps.length ? `${n} sur ${t.steps.length}` : '';
@@ -1153,6 +1382,20 @@ function updateDetailBits(t) {
   else if (t.updatedAt !== t.createdAt) meta.push(`Modifiée le ${F_FULL.format(new Date(t.updatedAt))} à ${F_TIME.format(new Date(t.updatedAt))}`);
   $('#dMeta', pane).innerHTML = meta.map((m) => `<p>${esc(m)}</p>`).join('');
   renderLinks(t);
+}
+function updateMatrixBits(t) {
+  const pane = els.detail;
+  const hint = $('#dMxHint', pane);
+  if (!hint) return;
+  for (const b of $$('[data-imp]', pane)) b.setAttribute('aria-pressed', String(JSON.stringify(t.matrix.important) === b.dataset.imp));
+  for (const b of $$('[data-urg]', pane)) b.setAttribute('aria-pressed', String(JSON.stringify(t.matrix.urgent) === b.dataset.urg));
+  const a = autoUrgent(t), d = state.settings.urgentDays;
+  const rule = d === 0 ? 'l\'échéance est aujourd\'hui ou dépassée' : `l'échéance est à ${plural(d, 'jour', 'jours')} ou moins`;
+  const auto = t.matrix.urgent === null
+    ? `Urgence automatique : ${a ? 'urgente' : 'pas urgente'} pour l'instant (urgente quand ${rule}).`
+    : `Urgence forcée : ${t.matrix.urgent ? 'urgente' : 'pas urgente'}, quelle que soit l'échéance.`;
+  const q = quadrantOf(t);
+  hint.textContent = t.done ? '' : (q === 'inbox' ? `À classer : indiquez si c'est important. ${auto}` : `Cadran « ${QUADS[q].title} ». ${auto}`);
 }
 function updateRemindBits(t) {
   const pane = els.detail;
@@ -1313,6 +1556,13 @@ function bindDetail() {
     if (b.dataset.act === 'top') { moveTask(t.id, 'top'); return; }
     if ('due' in b.dataset) { setDue(t, b.dataset.due || null); return; }
     if ('rem' in b.dataset) { setRemind(t, remindPreset(t, b.dataset.rem)); return; }
+    if ('imp' in b.dataset || 'urg' in b.dataset) {
+      const key = 'imp' in b.dataset ? 'important' : 'urgent';
+      const v = JSON.parse('imp' in b.dataset ? b.dataset.imp : b.dataset.urg);
+      commit(() => { t.matrix[key] = v; t.updatedAt = Date.now(); }, { undo: key === 'important' ? 'Importance modifiée' : 'Urgence modifiée', detail: false });
+      updateMatrixBits(t);
+      return;
+    }
     if (b.dataset.act === 'ics') { exportIcs([t]); return; }
     if (b.dataset.k && b.dataset.k.startsWith('stepdel:')) { removeStep(t, b.dataset.k.slice(8), 'next'); return; }
     if ('link' in b.dataset) {
@@ -1330,7 +1580,7 @@ function bindDetail() {
     if (e.key === 'Escape') {
       e.preventDefault(); e.stopPropagation();
       el.blur();
-      if (isNarrow()) closeOverlay(); else els.list.focus({ preventScroll: true });
+      if (overlayMode()) closeOverlay(); else els.list.focus({ preventScroll: true });
       return;
     }
     if (k === 'title' && e.key === 'Enter') { e.preventDefault(); $('#dNotes', pane).focus(); return; }
@@ -1908,7 +2158,7 @@ const pwa = {
     const card = $('#installCard');
     if (!card) return;
     const later = +(lsGet(KEY_INSTALL_LATER) || 0);
-    card.hidden = !(this.web && !this.standalone() && this.promptEvent && Date.now() - later > 3 * 86400000);
+    card.hidden = !(this.web && !this.standalone() && this.promptEvent && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000);
     renderSetupCard();
     // Réglages
     const sec = $('#setAppSec');
@@ -1942,7 +2192,7 @@ function renderSetupCard() {
 function setupCardWanted() {
   const later = +(lsGet(KEY_SETUP_LATER) || 0);
   const installPending = typeof pwa !== 'undefined' && !$('#installCard').hidden;
-  return fileSync.supported && !fileSync.handle && !!fileSync.ready && !installPending && Date.now() - later > 3 * 86400000;
+  return fileSync.supported && !fileSync.handle && !!fileSync.ready && !installPending && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000;
 }
 function renderStatus() {
   renderSetupCard();
@@ -2293,6 +2543,7 @@ function exportMarkdown() {
     const bits = [];
     if (t.due) bits.push(`échéance ${shortDate(t.due)}`);
     if (t.repeat) bits.push(repeatSentence(t.repeat).toLowerCase());
+    if (t.matrix.important !== null) bits.push(QUADS[quadrantOf(t)].title.toLowerCase());
     L.push(`${i + 1}. ${t.title || 'Sans titre'}${bits.length ? ` (${bits.join(', ')})` : ''}`);
     if (remindNext(t)) L.push(`    (rappel ${fmtWhenLong(remindNext(t))})`);
     for (const s of t.steps) L.push(`    - [${s.done ? 'x' : ' '}] ${s.text}`);
@@ -2428,6 +2679,7 @@ function refreshSettings() {
   $('#prefTheme').value = state.settings.theme;
   $('#prefAddTo').value = state.settings.addTo;
   $('#prefHolidays').checked = state.settings.holidays;
+  $('#prefUrgentDays').value = String(state.settings.urgentDays);
   $('#prefRemTime').value = state.settings.remindTime;
   $('#prefRemSound').checked = state.settings.remindSound;
   $('#prefRemSticky').checked = state.settings.remindSticky;
@@ -2472,6 +2724,7 @@ function bindSettings() {
   $('#prefTheme').addEventListener('change', (e) => setSetting('theme', e.target.value));
   $('#prefAddTo').addEventListener('change', (e) => { setSetting('addTo', e.target.value); renderQuickHint(); });
   $('#prefHolidays').addEventListener('change', (e) => setSetting('holidays', e.target.checked));
+  $('#prefUrgentDays').addEventListener('change', (e) => setSetting('urgentDays', +e.target.value));
   $('#prefRemTime').addEventListener('change', (e) => { if (isHM(e.target.value)) setSetting('remindTime', e.target.value); });
   $('#prefRemSound').addEventListener('change', (e) => setSetting('remindSound', e.target.checked));
   $('#prefRemSticky').addEventListener('change', (e) => setSetting('remindSticky', e.target.checked));
@@ -2612,17 +2865,19 @@ function toggleFromList(id, checked, row) {
 }
 function focusTitle() {
   if (!byId(ui.selectedId)) return;
-  if (isNarrow()) openOverlay();
+  if (overlayMode()) openOverlay();
   const ta = $('#dTitle', els.detail);
   if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
 }
 function setView(v) {
   if (ui.query) { ui.query = ''; els.search.value = ''; }
+  if (els.app.classList.contains('detailOpen')) closeOverlay();
   ui.view = v;
   render({ detail: false });
   const ids = navOrder();
-  if (!ids.includes(ui.selectedId)) { if (!isNarrow()) selectIndex(0, { quiet: true }); else { ui.selectedId = null; renderDetail(); } }
+  if (!ids.includes(ui.selectedId)) { if (!overlayMode()) selectIndex(0, { quiet: true }); else { ui.selectedId = null; renderDetail(); } }
   els.scroll.scrollTop = 0;
+  els.matrix.scrollTop = 0;
 }
 
 /* ---------- Clavier global ---------- */
@@ -2652,7 +2907,7 @@ function onKey(e) {
   }
 
   const onButton = e.target.closest && e.target.closest('button, a, summary');
-  const digit = { Digit1: 'todo', Numpad1: 'todo', Digit2: 'today', Numpad2: 'today', Digit3: 'done', Numpad3: 'done' }[e.code];
+  const digit = { Digit1: 'todo', Numpad1: 'todo', Digit2: 'today', Numpad2: 'today', Digit3: 'matrix', Numpad3: 'matrix', Digit4: 'done', Numpad4: 'done' }[e.code];
   if (digit && !e.altKey && (e.code.startsWith('Digit') || /^\d$/.test(k))) { e.preventDefault(); setView(digit); return; }
 
   if (e.altKey && (k === 'ArrowUp' || k === 'ArrowDown')) {
@@ -2671,9 +2926,9 @@ function onKey(e) {
     case '?':
       e.preventDefault(); $('#dlgShortcuts').showModal(); return;
     case 'ArrowDown': case 'j': case 'J':
-      e.preventDefault(); if (isNarrow() && els.app.classList.contains('detailOpen')) return; moveSelection(1); els.list.focus({ preventScroll: true }); return;
+      e.preventDefault(); if (overlayMode() && els.app.classList.contains('detailOpen')) return; moveSelection(1); focusSelectionHost(); return;
     case 'ArrowUp': case 'k': case 'K':
-      e.preventDefault(); if (isNarrow() && els.app.classList.contains('detailOpen')) return; moveSelection(-1); els.list.focus({ preventScroll: true }); return;
+      e.preventDefault(); if (overlayMode() && els.app.classList.contains('detailOpen')) return; moveSelection(-1); focusSelectionHost(); return;
     case 'Home':
       e.preventDefault(); selectIndex(0); return;
     case 'End':
@@ -2689,11 +2944,30 @@ function onKey(e) {
       if (!t.done) toggleFromList(t.id, true, rowEl(t.id)); else setDone(t.id, false);
       return;
     }
+    case 'i': case 'I': {
+      const t = byId(ui.selectedId);
+      if (!t || t.done) return;
+      e.preventDefault();
+      const v = t.matrix.important !== true;
+      commit(() => { t.matrix.important = v; t.updatedAt = Date.now(); }, { undo: v ? 'Marquée importante' : 'Marquée pas importante' });
+      toast(`${v ? 'Importante' : 'Pas importante'} : ${QUADS[quadrantOf(t)].title.toLowerCase()}.`);
+      return;
+    }
+    case 'u': case 'U': {
+      const t = byId(ui.selectedId);
+      if (!t || t.done) return;
+      e.preventDefault();
+      const a = autoUrgent(t);
+      const next = t.matrix.urgent === null ? !a : null; // automatique → forcé à l'inverse → automatique
+      commit(() => { t.matrix.urgent = next; t.updatedAt = Date.now(); }, { undo: 'Urgence modifiée' });
+      toast(next === null ? `Urgence automatique : ${a ? 'urgente' : 'pas urgente'} selon l'échéance.` : (next ? 'Forcée urgente.' : 'Forcée pas urgente.'));
+      return;
+    }
     case 'Delete':
       if (!ui.selectedId) return;
       e.preventDefault(); deleteTask(ui.selectedId); return;
     case 'Escape':
-      if (isNarrow() && els.app.classList.contains('detailOpen')) { e.preventDefault(); closeOverlay(); return; }
+      if (overlayMode() && els.app.classList.contains('detailOpen')) { e.preventDefault(); closeOverlay(); return; }
       if (ui.query) { e.preventDefault(); ui.query = ''; els.search.value = ''; render({ detail: false }); }
       return;
     default:
@@ -2706,6 +2980,9 @@ function boot() {
   els.todayLabel = $('#todayLabel');
   els.countTodo = $('#count-todo');
   els.countToday = $('#count-today');
+  els.countMatrix = $('#count-matrix');
+  els.matrix = $('#matrix');
+  els.scrim = $('#scrim');
   els.list = $('#list');
   els.scroll = $('#listScroll');
   els.detail = $('#detail');
@@ -2724,6 +3001,8 @@ function boot() {
   bindQuickAdd();
   bindSearch();
   bindList();
+  bindMatrix();
+  els.scrim.addEventListener('click', () => closeOverlay());
   bindDetail();
   bindSettings();
 
@@ -2769,7 +3048,7 @@ function boot() {
 
   document.addEventListener('keydown', onKey);
   window.addEventListener('popstate', () => { if (els.app.classList.contains('detailOpen')) closeOverlay({ fromPop: true }); });
-  window.addEventListener('resize', debounce(() => { if (!isNarrow()) els.app.classList.remove('detailOpen'); autosize($('#dTitle', els.detail)); autosize($('#dNotes', els.detail)); }, 120));
+  window.addEventListener('resize', debounce(() => { if (!overlayMode()) { els.app.classList.remove('detailOpen'); els.scrim.hidden = true; } else if (els.app.classList.contains('detailOpen')) els.scrim.hidden = isNarrow(); autosize($('#dTitle', els.detail)); autosize($('#dNotes', els.detail)); }, 120));
 
   // Synchronisation entre onglets ouverts sur le même fichier
   window.addEventListener('storage', (e) => {

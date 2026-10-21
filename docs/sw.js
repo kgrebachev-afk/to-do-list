@@ -1,6 +1,6 @@
 /* To do list — service worker : l'application fonctionne hors ligne.
    Aucune donnée ne transite ici : seuls les fichiers de l'application sont mis en cache. */
-const VERSION = '1.3.0+dff4b05e17';
+const VERSION = '1.4.0+73a30c8c9f';
 const CACHE = `todo-${VERSION}`;
 const ASSETS = ['./', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png'];
 

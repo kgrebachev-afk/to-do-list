@@ -562,3 +562,105 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
 .setupBody p { margin: 0 0 10px; font-size: 14px; color: var(--ink-2); max-width: 62ch; }
 .setupBody .btn { height: 34px; }
 @media (max-width: 860px) { .setupCard { margin: 4px 12px 8px 16px; } }
+
+/* ---------- Matrice urgent / important ---------- */
+.app.matrixMode .body { grid-template-columns: minmax(0, 1fr); }
+.app.matrixMode .detailPane {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 40; width: min(600px, 100vw);
+  border-left: 1px solid var(--line); box-shadow: var(--shadow-lift);
+  transform: translateX(102%); transition: transform .22s ease, visibility 0s linear .22s; visibility: hidden;
+}
+.app.matrixMode.detailOpen .detailPane { transform: none; visibility: visible; transition: transform .22s ease; }
+.app.matrixMode .dBack { display: inline-grid; }
+.app.matrixMode .dEmpty { display: none; }
+.scrim { position: fixed; inset: 0; z-index: 39; background: rgba(9, 15, 19, .28); animation: scrimIn .2s ease-out; }
+@keyframes scrimIn { from { opacity: 0; } }
+
+.matrix {
+  flex: 1; min-height: 0; padding: 6px 20px 18px 24px;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px;
+}
+.matrix.hasInbox { grid-template-columns: minmax(250px, 300px) minmax(0, 1fr); }
+.matrix > .empty { padding-left: 28px; }
+
+.grid4 {
+  min-height: 0; display: grid; gap: 10px;
+  grid-template-columns: 22px minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas: ". ut nt" "ia q1 q2" "na q3 q4";
+}
+.axis { font: 600 13.5px/1 var(--ff-c); color: var(--muted); letter-spacing: .01em; }
+.ax-top { padding: 2px 0 2px 4px; }
+.ax-u { grid-area: ut; } .ax-nu { grid-area: nt; }
+.ax-side { writing-mode: vertical-rl; transform: rotate(180deg); text-align: center; align-self: center; }
+.ax-i { grid-area: ia; } .ax-ni { grid-area: na; }
+
+.quad, .inbox {
+  min-height: 0; display: flex; flex-direction: column;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+  transition: border-color .12s, box-shadow .12s;
+}
+.quad.q1 { grid-area: q1; border-color: color-mix(in srgb, var(--signal) 55%, var(--line)); box-shadow: inset 0 3px 0 var(--signal); }
+.quad.q2 { grid-area: q2; box-shadow: inset 0 3px 0 var(--accent); }
+.quad.q3 { grid-area: q3; box-shadow: inset 0 3px 0 var(--line-2); }
+.quad.q4 { grid-area: q4; background: color-mix(in srgb, var(--paper) 55%, var(--bg)); }
+.inbox { background: color-mix(in srgb, var(--paper) 70%, var(--bg)); border-style: dashed; border-color: var(--line-2); }
+.qhead { display: flex; align-items: baseline; gap: 8px; padding: 12px 14px 8px; }
+.qhead h2 { margin: 0; font: 600 16.5px/1.2 var(--ff-c); }
+.quad.q1 .qhead h2 { color: var(--signal-ink); }
+.qsub { font-size: 13px; color: var(--muted); }
+.qhead .grow { flex: 1; }
+.qn { font: 600 14px/1 var(--ff-c); color: var(--muted); font-variant-numeric: tabular-nums; }
+.quad.q1 .qn { color: var(--signal-ink); }
+.ihint { margin: -2px 14px 6px; font-size: 12.5px; color: var(--muted); }
+.qbody { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 6px 8px; }
+.qempty { margin: 4px 10px; font-size: 13.5px; color: var(--muted); max-width: 46ch; }
+.quad.dropOn, .inbox.dropOn { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), inset 0 3px 0 var(--accent); }
+
+.mcard {
+  position: relative; display: grid; grid-template-columns: 18px 30px minmax(0, 1fr); align-items: start; column-gap: 2px;
+  padding: 6px 8px 6px 2px; border-radius: 8px; cursor: grab; user-select: none; -webkit-user-select: none;
+}
+.mcard + .mcard::before { content: ""; position: absolute; left: 50px; right: 8px; top: 0; height: 1px; background: var(--line); }
+.mcard:hover { background: var(--hover); }
+.mcard.sel { background: var(--accent-soft); }
+.mcard.sel::before, .mcard.sel + .mcard::before { display: none; }
+.mcard:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.mcard .check { margin-top: -3px; }
+.mnum { padding-top: 5px; text-align: right; font: 600 13px/1.2 var(--ff-c); color: var(--faint); font-variant-numeric: tabular-nums; }
+.quad.q1 .mcard:first-child .mnum { color: var(--signal-rank); font-size: 15px; padding-top: 4px; }
+.mbody { min-width: 0; padding: 3px 0 0 4px; }
+.mtitle { font-weight: 500; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.mmeta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.chip.forced { border-style: dashed; color: var(--muted); }
+.triage { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.triage .pill { height: 26px; font-size: 12.5px; padding: 0 9px; }
+.triage .pill[data-tri="true"]:hover { border-color: var(--signal); color: var(--signal-ink); background: var(--signal-soft); }
+.mcard.dragging { opacity: .4; }
+.mcard.dropBefore { box-shadow: inset 0 2px 0 var(--accent); }
+.mcard.dropAfter { box-shadow: inset 0 -2px 0 var(--accent); }
+.matrix.isDragging .mcard { cursor: grabbing; }
+.mcard.completing .mtitle { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+.mcard.leaving { animation: leave .26s ease-in forwards; }
+
+/* Priorité dans le détail : boutons segmentés */
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 9px; overflow: hidden; }
+.segBtn { height: 30px; padding: 0 11px; border: 0; background: var(--paper); color: var(--ink-2); font: 500 13.5px/1 var(--ff); }
+.segBtn + .segBtn { border-left: 1px solid var(--line-2); }
+.segBtn:hover { background: var(--hover); color: var(--ink); }
+.segBtn[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.segBtn[data-imp="true"][aria-pressed="true"] { background: var(--signal-soft); color: var(--signal-ink); }
+.segBtn:focus-visible { outline-offset: -2px; }
+
+@media (max-width: 1100px) {
+  .matrix.hasInbox { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .matrix.hasInbox .inbox { max-height: 34vh; }
+}
+@media (max-width: 860px) {
+  .matrix { padding: 4px 12px 16px 16px; overflow-y: auto; display: block; }
+  .matrix .inbox { margin-bottom: 12px; max-height: none; }
+  .grid4 { display: flex; flex-direction: column; gap: 12px; }
+  .axis { display: none; }
+  .qbody { overflow: visible; }
+  .app.matrixMode .detailPane { width: 100vw; border-left: 0; }
+}

@@ -29,6 +29,7 @@
     <nav class="views" role="tablist" aria-label="Vues">
       <button type="button" role="tab" data-view="todo" id="tab-todo">À faire <span class="count" id="count-todo"></span></button>
       <button type="button" role="tab" data-view="today" id="tab-today">Aujourd'hui <span class="count" id="count-today"></span></button>
+      <button type="button" role="tab" data-view="matrix" id="tab-matrix" title="Urgent / important (Maj+4)">Matrice <span class="count" id="count-matrix"></span></button>
       <button type="button" role="tab" data-view="done" id="tab-done">Terminées</button>
     </nav>
 
@@ -83,6 +84,8 @@
         </div>
       </div>
 
+      <div class="matrix" id="matrix" hidden></div>
+
       <div class="listScroll" id="listScroll">
         <div id="list" class="list" role="list" tabindex="0" aria-label="Tâches"></div>
       </div>
@@ -93,6 +96,7 @@
     <aside class="detailPane" id="detail" aria-label="Détail de la tâche"></aside>
   </main>
 
+  <div class="scrim" id="scrim" hidden></div>
   <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
   <div class="rcards" id="rcards" role="region" aria-label="Rappels" aria-live="polite"></div>
 </div>
@@ -169,6 +173,16 @@
           <option value="top">En haut de la liste</option>
         </select>
 
+        <label for="prefUrgentDays">Urgence automatique</label>
+        <select id="prefUrgentDays">
+          <option value="0">Échéance aujourd'hui ou dépassée</option>
+          <option value="1">Échéance à 1 jour ou moins</option>
+          <option value="2">Échéance à 2 jours ou moins</option>
+          <option value="3">Échéance à 3 jours ou moins</option>
+          <option value="5">Échéance à 5 jours ou moins</option>
+          <option value="7">Échéance à 7 jours ou moins</option>
+        </select>
+
         <span>Jours ouvrés</span>
         <label class="inlineCheck"><input type="checkbox" id="prefHolidays"> Exclure les jours fériés français</label>
       </div>
@@ -194,6 +208,8 @@
         <dt><kbd>Espace</kbd></dt><dd>Terminer ou rouvrir</dd>
         <dt><kbd>Alt</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Monter ou descendre la tâche</dd>
         <dt><kbd>Alt</kbd> <kbd>Maj</kbd> <kbd>↑</kbd></dt><dd>Mettre en tête de liste</dd>
+        <dt><kbd>I</kbd></dt><dd>Important ou pas important</dd>
+        <dt><kbd>U</kbd></dt><dd>Forcer urgent, pas urgent, ou revenir à l'automatique</dd>
         <dt><kbd>Suppr</kbd></dt><dd>Supprimer</dd>
         <dt><kbd>Ctrl</kbd> <kbd>Z</kbd></dt><dd>Annuler la dernière action</dd>
         <dt><kbd>Ctrl</kbd> <kbd>Y</kbd></dt><dd>Rétablir</dd>
@@ -202,7 +218,7 @@
     <section>
       <h3>Navigation</h3>
       <dl>
-        <dt><kbd>Maj</kbd> <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>À faire, Aujourd'hui, Terminées</dd>
+        <dt><kbd>Maj</kbd> <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></dt><dd>À faire, Aujourd'hui, Matrice, Terminées</dd>
         <dt><kbd>Ctrl</kbd> <kbd>F</kbd></dt><dd>Rechercher</dd>
         <dt><kbd>Échap</kbd></dt><dd>Revenir à la liste</dd>
         <dt><kbd>?</kbd></dt><dd>Afficher cette aide</dd>
@@ -252,6 +268,8 @@
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
     <symbol id="i-ok" viewBox="0 0 24 24"><path d="M4.5 12.5l4.5 4.5L19.5 6.5"/></symbol>
     <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 15.5H3z"/><path d="M12 10v4.5M12 17.5h.01"/></symbol>
+    <symbol id="i-matrix" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5.5 21V4.5M5.5 4.5h11l-2 4 2 4h-11"/></symbol>
     <symbol id="i-install" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8.5 20.5h7M12 7.5v6M9 11l3 3 3-3"/></symbol>
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol>
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
