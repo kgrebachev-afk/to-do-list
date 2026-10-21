@@ -28,4 +28,5 @@ select cron.unschedule('todo-cron-cleanup') where exists (select 1 from cron.job
 select cron.schedule('todo-cron-cleanup', '17 3 * * *', $job$
   delete from cron.job_run_details where end_time < now() - interval '2 days';
   delete from public.reminders where sent_at < now() - interval '30 days';
+  delete from public.accounts where last_seen < now() - interval '400 days';
 $job$);

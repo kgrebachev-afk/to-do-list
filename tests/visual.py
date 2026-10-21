@@ -1,7 +1,8 @@
+import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS
 import pathlib, json
 from playwright.sync_api import sync_playwright
-URL=(pathlib.Path('/home/claude/ordre-du-jour/dist/to-do-list.html')).as_uri()
-OUT=pathlib.Path('/tmp/claude-0/-home-claude/59fdc690-8e41-50a4-81b9-8a7023412a59/scratchpad/shots')
+URL=((ROOT/'dist/to-do-list.html')).as_uri()
+OUT=SHOTS
 SEED = """() => {
  const day=86400000, now=Date.now(), T=(o)=>Object.assign({id:crypto.randomUUID(),notes:'',steps:[],done:false,doneAt:null,due:null,repeat:null,createdAt:now-5*day,updatedAt:now-5*day},o);
  const st=(a)=>a.map(([text,done])=>({id:crypto.randomUUID(),text,done:!!done}));

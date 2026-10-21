@@ -1,14 +1,15 @@
-# Synchronisation PC <-> téléphone avec un faux serveur Supabase
-import pathlib, subprocess, sys, time, json, os, shutil, urllib.request, base64
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
+# Synchronisation PC <-> téléphone (jumelage par QR code) avec un faux serveur Supabase
+import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS
+import pathlib, subprocess, sys, time, json, os, shutil, urllib.request, io, re
 from fake.supabase import start, S
 from playwright.sync_api import sync_playwright
-ROOT = pathlib.Path('/home/claude/ordre-du-jour')
-SCR = pathlib.Path('/tmp/claude-0/-home-claude/59fdc690-8e41-50a4-81b9-8a7023412a59/scratchpad/synctest')
-OUT = pathlib.Path('/tmp/claude-0/-home-claude/59fdc690-8e41-50a4-81b9-8a7023412a59/scratchpad/shots')
+from PIL import Image
+
+SCR = TMP / 'synctest'
+OUT = SHOTS
 API = 'http://127.0.0.1:8791'
 shutil.rmtree(SCR, ignore_errors=True); (SCR / 'site').mkdir(parents=True)
-env = dict(os.environ, CLOUD_URL=API, CLOUD_KEY='anon-test', OUT_DIR=str(SCR / 'build'))
+env = dict(os.environ, CLOUD_URL=API, CLOUD_KEY='sb_publishable_test', OUT_DIR=str(SCR / 'build'))
 subprocess.run(['node', str(ROOT / 'build.mjs')], env=env, check=True, capture_output=True)
 shutil.copytree(SCR / 'build/web', SCR / 'site/to-do-list')
 fake = start(8791)
@@ -21,7 +22,7 @@ def server(): return json.load(urllib.request.urlopen(API + '/__state'))
 titles = lambda pg: pg.evaluate("window.__odj.state().tasks.filter(t=>!t.done).sort((a,b)=>a.position-b.position).map(t=>t.title)")
 PUSH_MOCK = """
   (() => {
-    const fake = { endpoint: 'https://push.example/' + Math.random().toString(36).slice(2), toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'BPk', auth: 'au' } }; }, unsubscribe: async () => true };
+    const fake = { endpoint: 'https://fcm.googleapis.com/fcm/send/' + Math.random().toString(36).slice(2), toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'BPk', auth: 'au' } }; }, unsubscribe: async () => true };
     let cur = null;
     if (self.PushManager) {
       PushManager.prototype.subscribe = async function () { cur = fake; return fake; };
@@ -29,83 +30,140 @@ PUSH_MOCK = """
     }
   })();
 """
+ANDROID_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Mobile Safari/537.36'
+IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1'
+def wait_js(pg, expr, timeout=10000):
+    # attente par interrogations successives (la CSP de l'application interdit l'évaluation de chaînes)
+    end = time.time() + timeout / 1000
+    while time.time() < end:
+        try:
+            if pg.evaluate(expr): return True
+        except Exception: pass
+        pg.wait_for_timeout(100)
+    raise TimeoutError(expr)
 def sync_now(pg):
     pg.evaluate("window.__odj.cloud.sync()"); pg.wait_for_timeout(400)
-    pg.wait_for_function("!window.__odj.cloud.running", timeout=8000)
+    wait_js(pg, "!window.__odj.cloud.running", 10000)
+def phone_ctx(b, ua=ANDROID_UA, **kw):
+    c = b.new_context(locale='fr-FR', timezone_id='Europe/Paris', viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True, user_agent=ua, **kw)
+    c.add_init_script("delete window.showSaveFilePicker; delete window.showOpenFilePicker;" + PUSH_MOCK)
+    c.grant_permissions(['notifications'], origin='http://127.0.0.1:8790')
+    return c
+def write_y4m(png_bytes, path, w=640, h=480, frames=20):
+    """Vidéo de caméra factice (format Y4M) montrant le QR code au centre."""
+    qr = Image.open(io.BytesIO(png_bytes)).convert('RGB')
+    side = 340; qr = qr.resize((side, side), Image.NEAREST)
+    img = Image.new('RGB', (w, h), (235, 238, 240)); img.paste(qr, ((w - side) // 2, (h - side) // 2))
+    y, cb, cr = img.convert('YCbCr').split()
+    cb = cb.resize((w // 2, h // 2)); cr = cr.resize((w // 2, h // 2))
+    with open(path, 'wb') as f:
+        f.write(f'YUV4MPEG2 W{w} H{h} F10:1 Ip A1:1 C420jpeg\n'.encode())
+        for _ in range(frames):
+            f.write(b'FRAME\n'); f.write(y.tobytes()); f.write(cb.tobytes()); f.write(cr.tobytes())
 
-def connect(pg, pass_, first=False, wrong=None):
-    pg.locator('#dlgSync').wait_for(state='visible')
-    pg.fill('#syncEmail', 'kostadin@example.com'); pg.click('[data-sync="send"]')
-    pg.locator('#syncCode').wait_for()
-    code = server()['codes']['kostadin@example.com']
-    pg.fill('#syncCode', '000000'); pg.click('[data-sync="verify"]'); pg.wait_for_timeout(300)
-    bad_code = pg.locator('#syncMsg').inner_text()
-    pg.fill('#syncCode', code); pg.click('[data-sync="verify"]')
-    pg.locator('#syncPass').wait_for()
-    if first:
-        pg.fill('#syncPass', 'court'); pg.fill('#syncPass2', 'court'); pg.click('[data-sync="create"]')
-        short = pg.locator('#syncMsg').inner_text()
-        pg.fill('#syncPass', pass_); pg.fill('#syncPass2', pass_); pg.click('[data-sync="create"]')
-        need_check = pg.locator('#syncMsg').inner_text()
-        pg.check('#syncNoted'); pg.click('[data-sync="create"]')
-        return bad_code, short, need_check
-    if wrong:
-        pg.fill('#syncPass', wrong); pg.click('[data-sync="unlock"]'); pg.locator('#syncMsg').wait_for(state='visible', timeout=10000)
-        wrong_msg = pg.locator('#syncMsg').inner_text()
-        pg.fill('#syncPass', pass_); pg.click('[data-sync="unlock"]')
-        return bad_code, wrong_msg
-
-PASS = 'cheval batterie agrafe correcte'
 try:
   with sync_playwright() as p:
     b = p.chromium.launch(channel='chromium')  # nouveau mode sans écran : notifications disponibles
     pc = b.new_context(locale='fr-FR', timezone_id='Europe/Paris', viewport={'width': 1366, 'height': 820})
     pc.add_init_script(PUSH_MOCK)
-    ph = b.new_context(locale='fr-FR', timezone_id='Europe/Paris', viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True,
-                       user_agent='Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Mobile Safari/537.36')
-    ph.add_init_script("delete window.showSaveFilePicker; delete window.showOpenFilePicker;" + PUSH_MOCK)
-    ph.grant_permissions(['notifications'], origin='http://127.0.0.1:8790')
     A = pc.new_page(); A.on('pageerror', lambda e: errs.append('PC ' + str(e)))
     A.goto(URL); A.wait_for_timeout(500)
     for t in ['Clôture J+3', 'Relancer les achats', 'Point atelier']:
         A.fill('#qaInput', t); A.press('#qaInput', 'Enter')
+
+    # --- PC : première synchronisation, création du code
     A.click('#btnSettings')
-    check('PC : section Synchronisation dans les réglages', A.locator('#setSyncSec').is_visible())
+    check('PC : section Synchronisation, sans e-mail ni mot de passe', A.locator('#setSyncSec').is_visible() and 'pas d\'e-mail' in A.locator('#setSyncText').inner_text())
     A.click('[data-syncset="open"]')
-    bad_code, short, need_check = connect(A, PASS, first=True)
-    check('code faux refusé avec un message clair', 'incorrect ou expiré' in bad_code, bad_code)
-    check('phrase trop courte refusée', '12 caractères' in short, short)
-    check('confirmation « j\'ai noté » exigée', 'Cochez' in need_check, need_check)
-    A.locator('#dlgSyncTitle', has_text="C'est prêt").wait_for(timeout=15000)
-    A.screenshot(path=str(OUT / '90-sync-done.png'))
-    check('PC : QR code pour ajouter le téléphone', A.locator('#syncQr svg').count() == 1)
+    A.locator('#dlgSyncTitle', has_text='Synchroniser mes appareils').wait_for()
+    A.screenshot(path=str(OUT / '93-sync-start.png'))
+    A.click('[data-sync="create"]')
+    A.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
+    wait_js(A, "!window.__odj.cloud.running", 10000)
+    code_txt = A.locator('.syncCode').inner_text()
+    CODE = code_txt.replace('-', '')
+    check('code affiché au format XXXXX-XXXXX-XXXXX-XXXXX', re.fullmatch(r'[0-9A-Z]{5}(-[0-9A-Z]{5}){3}', code_txt) is not None, code_txt)
+    check('QR code affiché', A.locator('#syncQr svg').count() == 1)
+    A.screenshot(path=str(OUT / '94-sync-qr.png'))
+    qr_png = A.locator('#syncQr').screenshot()
     A.click('#syncFoot [data-sync="cancel"]')
-    A.wait_for_function("!window.__odj.cloud.running", timeout=8000)
     st = server()
     items = [i for i in st['items'] if i['id'] != '__settings']
     check('serveur : 3 tâches envoyées', len(items) == 3, len(items))
     blob = json.dumps(st)
-    check('serveur : aucun texte en clair (chiffré de bout en bout)', all(w not in blob for w in ['Clôture', 'Relancer', 'atelier', PASS]))
-    check('serveur : coffre créé (sel + vérificateur)', len(st['vault']) == 1)
+    check('serveur : aucun texte en clair, ni le code (chiffré de bout en bout)', all(w not in blob for w in ['Clôture', 'Relancer', 'atelier', CODE]))
+    check('serveur : un compte, identifié par une empreinte', len(st['accounts']) == 1 and re.fullmatch(r'[0-9a-f]{64}', st['accounts'][0]))
+    calls = [c for c in st['calls'] if c[1].startswith('/rest/v1/rpc/')]
+    check('uniquement des appels de fonctions, sans session ni jeton', all('/auth/' not in c[1] for c in st['calls']) and len(calls) > 0)
     check('PC : barre d\'état « Synchronisé »', 'Synchronisé' in A.locator('#status').inner_text(), A.locator('#status').inner_text())
 
-    # --- téléphone
+    # --- téléphone Android : saisie manuelle du code (avec une faute, puis en minuscules avec espaces)
+    ph = phone_ctx(b)
     P = ph.new_page(); P.on('pageerror', lambda e: errs.append('TEL ' + str(e)))
     P.goto(URL); P.wait_for_timeout(500)
-    check('téléphone : carte « Retrouver vos tâches de l\'ordinateur »', P.locator('#syncCard').is_visible())
-    P.screenshot(path=str(OUT / '91-phone-card.png'))
-    P.click('[data-synccard="go"]')
-    _, wrong_msg = connect(P, PASS, wrong='mauvaise phrase secrète')
-    check('téléphone : mauvaise phrase secrète refusée', 'incorrecte' in wrong_msg, wrong_msg)
-    P.locator('#dlgSyncTitle', has_text="C'est prêt").wait_for(timeout=15000)
-    P.wait_for_function("window.__odj.state().tasks.length === 3", timeout=8000)
+    check('téléphone : carte « Retrouver vos tâches de l\'ordinateur » avec Scanner', P.locator('#syncCard').is_visible() and P.locator('[data-synccard="scan"]').is_visible())
+    P.screenshot(path=str(OUT / '95-phone-card.png'))
+    P.click('[data-synccard="code"]')
+    wrong = CODE[:5] + ('2' if CODE[5] != '2' else '3') + CODE[6:]
+    P.fill('#syncCodeInput', wrong); P.click('[data-sync="join-typed"]'); P.wait_for_timeout(200)
+    check('faute de frappe détectée sans appeler le serveur', 'faute de frappe' in P.locator('#syncMsg').inner_text(), P.locator('#syncMsg').inner_text())
+    typed = ' '.join([CODE[i:i + 4] for i in range(0, 20, 4)]).lower().replace('0', 'o')
+    P.fill('#syncCodeInput', typed)
+    check('saisie remise en forme (tirets, majuscules, O → 0)', P.locator('#syncCodeInput').input_value() == code_txt, P.locator('#syncCodeInput').input_value())
+    P.click('[data-sync="join-typed"]')
+    P.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
+    wait_js(P, "window.__odj.state().tasks.length === 3", 10000)
     check('téléphone : les 3 tâches du PC arrivent, dans le même ordre', titles(P) == ['Clôture J+3', 'Relancer les achats', 'Point atelier'], titles(P))
     check('téléphone : proposition d\'activer les notifications', P.locator('#syncBody [data-sync="push"]').count() == 1)
-    P.click('#syncBody [data-sync="push"]'); P.wait_for_timeout(500)
+    P.click('#syncBody [data-sync="push"]'); P.wait_for_timeout(600)
     st = server()
     check('téléphone : abonnement aux notifications enregistré', len(st['subs']) == 1 and st['subs'][0]['label'] == 'Téléphone Android', st['subs'])
-    P.screenshot(path=str(OUT / '92-phone-done.png'))
+    P.screenshot(path=str(OUT / '96-phone-done.png'))
     P.click('#syncFoot [data-sync="cancel"]')
+
+    # --- code inexistant (bien formé)
+    P3c = phone_ctx(b); P3 = P3c.new_page(); P3.goto(URL); P3.wait_for_timeout(400)
+    P3.evaluate("window.__odj.syncUi.open('enter')")
+    body = 'ABCDEFGHJKMNPQRSTVW'
+    P3.fill('#syncCodeInput', body + P3.evaluate(f"window.__odj.syncCode.check('{body}')")); P3.click('[data-sync="join-typed"]')
+    P3.locator('#syncMsg').wait_for(state='visible', timeout=8000)
+    check('code bien formé mais inconnu : message clair, appareil non connecté', 'pas (ou plus) valable' in P3.locator('#syncMsg').inner_text() and not P3.evaluate("window.__odj.cloud.isOn()"), P3.locator('#syncMsg').inner_text())
+    P3c.close()
+
+    # --- lien de jumelage (QR scanné avec l'appareil photo) : confirmation, puis connecté ; le code disparaît de l'adresse
+    L = phone_ctx(b); LP = L.new_page(); LP.on('pageerror', lambda e: errs.append('LIEN ' + str(e)))
+    LP.goto(URL + '#lien=' + CODE); LP.wait_for_timeout(600)
+    check('lien : demande de confirmation avec mise en garde', LP.locator('#dlgSyncTitle', has_text='Connecter cet appareil').is_visible() and 'propres appareils' in LP.locator('#syncBody').inner_text())
+    check('lien : le code est retiré de l\'adresse', '#lien' not in LP.url, LP.url)
+    LP.click('[data-sync="join-pending"]'); LP.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
+    wait_js(LP, "window.__odj.state().tasks.length === 3", 10000)
+    check('lien : appareil connecté, tâches reçues', LP.evaluate("window.__odj.cloud.isOn()") and len(titles(LP)) == 3)
+    L.close()
+
+    # --- iPhone dans Safari (pas installée) : explique l'installation, propose de connecter Safari quand même
+    I = phone_ctx(b, ua=IPHONE_UA); IP = I.new_page(); IP.goto(URL + '#lien=' + CODE); IP.wait_for_timeout(600)
+    check('iPhone (Safari) : explique l\'installation sur l\'écran d\'accueil', IP.locator('#dlgSyncTitle', has_text="Installer sur l'iPhone").is_visible() and 'écran d\'accueil' in IP.locator('#syncBody').inner_text())
+    IP.screenshot(path=str(OUT / '97-iphone-install.png'))
+    IP.click('[data-sync="ios-anyway"]'); IP.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
+    wait_js(IP, "window.__odj.state().tasks.length === 3", 10000)
+    check('iPhone : « Connecter Safari » fonctionne aussi', len(titles(IP)) == 3)
+    I.close()
+
+    # --- scanner intégré : caméra factice qui filme le QR code de l'écran du PC
+    y4m = SCR / 'qr.y4m'; write_y4m(qr_png, y4m)
+    b2 = p.chromium.launch(channel='chromium', args=['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', f'--use-file-for-fake-video-capture={y4m}'])
+    C = phone_ctx(b2, permissions=['camera']); CP = C.new_page(); CP.on('pageerror', lambda e: errs.append('SCAN ' + str(e)))
+    CP.goto(URL); CP.wait_for_timeout(500)
+    CP.click('[data-synccard="scan"]')
+    CP.wait_for_timeout(1500); CP.screenshot(path=str(OUT / '98-scanner.png'))
+    try:
+        CP.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=20000)
+        wait_js(CP, "window.__odj.cloud.isOn() && !window.__odj.cloud.running", 15000)
+    except Exception as e:
+        print('scan :', CP.locator('#scanState').inner_text() if CP.locator('#scanState').count() else '?')
+    check('scanner : le QR code filmé connecte l\'appareil', CP.evaluate("window.__odj.cloud.isOn()") and len(titles(CP)) == 3, titles(CP))
+    check('scanner : caméra coupée après la lecture', CP.evaluate("window.__odj.scanner.stream === null"))
+    C.close(); b2.close()
 
     # --- modifications dans les deux sens
     P.fill('#qaInput', 'Noté dans le train'); P.press('#qaInput', 'Enter'); P.wait_for_timeout(2200)
@@ -115,7 +173,6 @@ try:
     A.locator('#dTitle').click(); A.keyboard.press('End'); A.keyboard.type(' (salle B)'); A.wait_for_timeout(2200)
     sync_now(P)
     check('PC → téléphone : titre modifié', 'Point atelier (salle B)' in titles(P), titles(P))
-    # suppression sur le téléphone, puis annulation sur le PC d'une autre suppression
     P.evaluate("(() => { const t = window.__odj.state().tasks.find(t => t.title === 'Relancer les achats'); window.__odj.select(t.id); })()")
     P.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Delete', bubbles: true}))"); P.wait_for_timeout(2200)
     sync_now(A)
@@ -124,7 +181,6 @@ try:
     A.keyboard.press('Control+z'); A.wait_for_timeout(2200)
     sync_now(P)
     check('PC : supprimer puis annuler → la tâche reste sur le téléphone', 'Clôture J+3' in titles(P), titles(P))
-    # modifications simultanées hors connexion sur deux tâches différentes
     S.down = True
     A.fill('#qaInput', 'Hors ligne PC'); A.press('#qaInput', 'Enter')
     P.fill('#qaInput', 'Hors ligne téléphone'); P.press('#qaInput', 'Enter')
@@ -134,7 +190,6 @@ try:
     A.evaluate("window.dispatchEvent(new Event('online'))"); P.evaluate("window.dispatchEvent(new Event('online'))"); A.wait_for_timeout(1500)
     sync_now(A); sync_now(P); sync_now(A)
     check('retour du réseau : les deux ajouts sont partout', {'Hors ligne PC', 'Hors ligne téléphone'} <= set(titles(A)) and set(titles(A)) == set(titles(P)), (titles(A), titles(P)))
-    # réglage partagé
     A.evaluate("window.__odj.setSetting('remindTime', '08:30')"); A.wait_for_timeout(2200)
     sync_now(P)
     check('réglage « heure par défaut » partagé', P.evaluate("window.__odj.state().settings.remindTime") == '08:30')
@@ -142,8 +197,7 @@ try:
     # --- rappels : planning chiffré envoyé au serveur, notification déchiffrée sur le téléphone
     A.locator('#list .row', has_text='Clôture J+3').click()
     A.locator('[data-rem="1h"]').click(); A.wait_for_timeout(2400)
-    st = server()
-    rem = [r for r in st['reminders']]
+    rem = server()['reminders']
     tid = A.evaluate("window.__odj.state().tasks.find(t => t.title === 'Clôture J+3').id")
     check('rappel planifié côté serveur, texte chiffré', len(rem) == 1 and rem[0]['task_id'] == tid and 'Clôture' not in rem[0]['payload'], rem)
     sync_now(P)
@@ -156,27 +210,19 @@ try:
     P.wait_for_timeout(800)
     notes = P.evaluate("navigator.serviceWorker.ready.then(r => r.getNotifications()).then(ns => ns.map(n => ({title: n.title, body: n.body, tag: n.tag})))")
     check('notification push déchiffrée sur le téléphone (titre de la tâche)', any(n['title'] == 'Clôture J+3' and n['tag'] == f'odj-{tid}' for n in notes), notes)
-    # message illisible (autre clé) : notification générique, pas d'erreur
     cdp.send('ServiceWorker.deliverPushMessage', {'origin': 'http://127.0.0.1:8790', 'registrationId': regs_list[0]['registrationId'], 'data': json.dumps({'t': 'x', 'c': 'v1.AAAA.BBBB'})})
     P.wait_for_timeout(600)
     notes = P.evaluate("navigator.serviceWorker.ready.then(r => r.getNotifications()).then(ns => ns.map(n => n.title))")
     check('message indéchiffrable : notification générique « Rappel »', 'Rappel' in notes, notes)
-    # tâche terminée → rappel retiré du serveur
     A.locator('#dDone').check(); A.wait_for_timeout(2400)
     check('tâche terminée : rappel retiré du serveur', len(server()['reminders']) == 0, server()['reminders'])
 
-    # --- session : renouvellement automatique du jeton
-    n_before = len([c for c in server()['calls'] if c[1] == '/auth/v1/token'])
-    A.evaluate("(() => { const c = window.__odj.cloud; c.st.session.expires_at = Date.now(); c.save(); })()")
-    sync_now(A)
-    n_after = len([c for c in server()['calls'] if c[1] == '/auth/v1/token'])
-    check('jeton expiré : renouvelé tout seul', n_after == n_before + 1 and A.evaluate("window.__odj.cloud.status") == 'ready')
-    # rechargement : reste connecté, clé conservée
+    # --- rechargement : reste connecté indéfiniment, sans rien ressaisir
     P.reload(); P.wait_for_timeout(800)
-    P.wait_for_function("!window.__odj.cloud.running", timeout=8000)
-    check('téléphone rechargé : toujours synchronisé, sans ressaisir la phrase', P.evaluate("window.__odj.cloud.status") == 'ready' and len(titles(P)) >= 4)
+    wait_js(P, "!window.__odj.cloud.running", 10000)
+    check('téléphone rechargé : toujours synchronisé, rien à ressaisir', P.evaluate("window.__odj.cloud.status") == 'ready' and len(titles(P)) >= 4)
 
-    # --- relecture : horloge d'un appareil en avance, l'autre modifie après → la modification la plus récente gagne partout
+    # --- horloge d'un appareil en avance
     A.fill('#qaInput', 'Budget'); A.press('#qaInput', 'Enter'); A.wait_for_timeout(2200); sync_now(P)
     A.evaluate("(() => { const s = window.__odj.state(); const t = s.tasks.find(x => x.title === 'Budget'); t.title = 'Budget PC'; t.updatedAt = Date.now() + 3600000; })()")
     sync_now(A)
@@ -188,13 +234,12 @@ try:
     sync_now(A)
     check('… et la modification suivante sur l\'appareil en retard l\'emporte bien', 'Budget final' in titles(A), titles(A))
     P.keyboard.press('Escape'); P.wait_for_timeout(300)
-    # --- annulation après une synchronisation : ne défait pas le travail de l'autre appareil
     A.fill('#qaInput', 'Tâche PC à annuler'); A.press('#qaInput', 'Enter')
     P.fill('#qaInput', 'Ajout téléphone à garder'); P.press('#qaInput', 'Enter'); P.wait_for_timeout(2200)
     sync_now(A)
     A.locator('#list').focus(); A.keyboard.press('Control+z'); A.wait_for_timeout(2400); sync_now(P)
     check('Ctrl+Z après réception : l\'ajout du téléphone reste partout', 'Ajout téléphone à garder' in titles(A) and 'Ajout téléphone à garder' in titles(P), (titles(A), titles(P)))
-    # --- report d'un rappel : synchronisé et transmis au serveur
+    # --- report d'un rappel
     A.locator('#list .row', has_text='Point atelier').click(); A.locator('[data-rem="1h"]').click(); A.wait_for_timeout(2400)
     tid2 = A.evaluate("window.__odj.state().tasks.find(t => t.title.startsWith('Point atelier')).id")
     A.evaluate(f"(() => {{ const t = window.__odj.state().tasks.find(x => x.id === '{tid2}'); t.remind.fired = true; t.remind.firedAt = Date.now(); window.__odj.reminders.refresh(); }})()")
@@ -204,31 +249,27 @@ try:
     check('report : nouvelle heure envoyée au serveur', rr and rr[0]['fire_at'] == snz, (rr, snz))
     sync_now(P)
     check('report : synchronisé sur le téléphone', P.evaluate(f"window.__odj.state().tasks.find(x => x.id === '{tid2}').remind.snooze") == snz)
-    # --- tâche répétée terminée sur les deux appareils hors ligne : une seule occurrence suivante
+    # --- répétition terminée sur les deux appareils hors ligne
     A.keyboard.press('Escape')
     A.fill('#qaInput', 'Hebdo double'); A.press('#qaInput', 'Enter'); A.wait_for_timeout(300)
     A.locator('#list .row', has_text='Hebdo double').click(); A.locator('#dRepeat').select_option('weekly'); A.wait_for_timeout(2400); sync_now(P)
     S.down = True
     for pg in (A, P):
-        pg.evaluate("(() => { const t = window.__odj.state().tasks.find(x => x.title === 'Hebdo double' && !x.done); document.querySelector('#app'); window.__odj.select(t.id); })()")
+        pg.evaluate("(() => { const t = window.__odj.state().tasks.find(x => x.title === 'Hebdo double' && !x.done); window.__odj.select(t.id); })()")
         pg.evaluate("document.querySelector('#dDone') && (document.querySelector('#dDone').click())")
     A.wait_for_timeout(500); S.down = False
     sync_now(A); sync_now(P); sync_now(A)
     n_open = A.evaluate("window.__odj.state().tasks.filter(x => x.title === 'Hebdo double' && !x.done).length")
     check('répétition terminée sur 2 appareils hors ligne : une seule occurrence suivante', n_open == 1, n_open)
-    # --- très longue tâche avec rappel : ne bloque pas la synchronisation des rappels
     A.keyboard.press('Escape')
     A.fill('#qaInput', 'é' * 480 + ' @demain @9h'); A.press('#qaInput', 'Enter'); A.wait_for_timeout(2400)
     check('titre très long avec rappel : synchronisation sans erreur', A.evaluate("window.__odj.cloud.status") == 'ready', A.evaluate("window.__odj.cloud.error"))
-    # --- deux fenêtres sur le PC : pas de déconnexion mutuelle
-    A2 = pc.new_page(); A2.goto(URL); A2.wait_for_timeout(800); A2.wait_for_function("!window.__odj.cloud.running", timeout=8000)
-    A.evaluate("(() => { const c = window.__odj.cloud; c.st.session.expires_at = Date.now(); c.save(); })()")
+    # --- deux fenêtres sur le PC
+    A2 = pc.new_page(); A2.goto(URL); A2.wait_for_timeout(800); wait_js(A2, "!window.__odj.cloud.running", 10000)
     sync_now(A); sync_now(A2)
-    check('deux fenêtres : renouvellement partagé, aucune déconnexion', A.evaluate("window.__odj.cloud.status") == 'ready' and A2.evaluate("window.__odj.cloud.status") == 'ready', (A.evaluate("window.__odj.cloud.status"), A2.evaluate("window.__odj.cloud.status")))
-    A2.close()
-    # --- modification faite pendant une synchronisation : envoyée quand même
+    check('deux fenêtres : toutes deux synchronisées', A.evaluate("window.__odj.cloud.status") == 'ready' and A2.evaluate("window.__odj.cloud.status") == 'ready')
     A.evaluate("window.__odj.cloud.sync()"); A.fill('#qaInput', 'Pendant la synchro'); A.press('#qaInput', 'Enter'); A.wait_for_timeout(2600)
-    A.wait_for_function("!window.__odj.cloud.running", timeout=8000)
+    wait_js(A, "!window.__odj.cloud.running", 10000)
     sync_now(P)
     check('ajout pendant une synchronisation : bien envoyé', 'Pendant la synchro' in titles(P), titles(P))
     # --- beaucoup de tâches : pages complètes
@@ -240,19 +281,32 @@ try:
     nb = P2.evaluate("window.__odj.state().tasks.filter(t => t.id.startsWith('bulk-')).length")
     check('1 050 tâches : tout est relu, page par page', nb == 1050, nb)
     P2.close()
-    # --- phrase secrète changée sur un appareil : l'autre se bloque au lieu d'envoyer avec l'ancienne clé
-    A.evaluate("window.__odj.cloud.resetCloud()"); A.wait_for_timeout(500)
-    A.evaluate(f"window.__odj.cloud.unlock('nouvelle phrase secrète solide', null)"); A.wait_for_timeout(2500)
-    A.wait_for_function("!window.__odj.cloud.running", timeout=15000)
-    P.fill('#qaInput', 'Après changement de phrase'); P.press('#qaInput', 'Enter'); P.wait_for_timeout(2600)
+
+    # --- changer de code (téléphone perdu) : les autres appareils sont déconnectés et n'envoient plus rien
+    A2.click('#btnSettings'); A2.click('[data-syncset="change"]')
+    check('changer de code : avertissement clair', 'Tous vos autres appareils seront déconnectés' in A2.locator('#syncBody').inner_text())
+    A2.click('[data-sync="change-go"]')
+    A2.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=20000)
+    NEW = A2.locator('.syncCode').inner_text().replace('-', '')
+    check('nouveau code différent', NEW != CODE)
     st = server()
-    check('autre appareil : bloqué, demande la nouvelle phrase', P.evaluate("window.__odj.cloud.status") == 'locked', P.evaluate("window.__odj.cloud.status"))
-    check('… et n\'a rien envoyé avec l\'ancienne clé', 'Après changement de phrase' not in json.dumps(st) and all(i['id'] != P.evaluate("window.__odj.state().tasks.find(t=>t.title==='Après changement de phrase').id") for i in st['items']))
-    # déconnexion
-    P.click('#btnSettings'); P.click('[data-syncset="signout"]'); P.click('#dlgConfirm [data-choice="ok"]'); P.wait_for_timeout(600)
-    dbg = (len(titles(P)), P.evaluate("window.__odj.cloud.isOn()"), server()['subs'], P.evaluate("JSON.stringify(window.__odj.cloud.st)"))
-    check('déconnexion : tâches gardées sur l\'appareil, abonnement retiré', dbg[0] >= 4 and dbg[1] is False and len(dbg[2]) == 0, dbg)
-    # le fichier unique (sans Internet) n'expose rien de tout ça
+    check('serveur : ancien compte supprimé, un seul compte', len(st['accounts']) == 1)
+    A2.click('#syncFoot [data-sync="cancel"]'); A2.close()
+    A.wait_for_timeout(300); sync_now(A)
+    check('autre fenêtre du PC : passe au nouveau code toute seule', A.evaluate("window.__odj.cloud.st.code") == NEW and A.evaluate("window.__odj.cloud.status") == 'ready', A.evaluate("window.__odj.cloud.status"))
+    P.fill('#qaInput', 'Après le changement de code'); P.press('#qaInput', 'Enter'); P.wait_for_timeout(2600)
+    st = server()
+    check('téléphone : déconnecté, invite à scanner le nouveau QR code', P.evaluate("window.__odj.cloud.isDead()") and 'nouveau QR code' in P.locator('#status').inner_text(), P.locator('#status').inner_text())
+    check('… et rien envoyé (ancien code refusé)', all(i['id'] != P.evaluate("window.__odj.state().tasks.find(t=>t.title==='Après le changement de code').id") for i in st['items']))
+    P.goto(URL + '#lien=' + NEW); P.wait_for_timeout(700)
+    P.click('[data-sync="join-pending"]'); P.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=20000)
+    wait_js(P, "!window.__odj.cloud.running", 10000); P.click('#syncFoot [data-sync="cancel"]')
+    sync_now(A)
+    check('téléphone rescanné : sa tâche hors code est fusionnée et arrive sur le PC', 'Après le changement de code' in titles(A), titles(A)[:5])
+    check('téléphone rescanné : notifications réabonnées au nouveau code', any(s['label'] == 'Téléphone Android' for s in server()['subs']), server()['subs'])
+    # --- déconnexion
+    P.click('#btnSettings'); P.click('[data-syncset="signout"]'); P.click('#dlgConfirm [data-choice="ok"]'); P.wait_for_timeout(700)
+    check('déconnexion : tâches gardées sur l\'appareil, abonnement retiré', len(titles(P)) >= 4 and not P.evaluate("window.__odj.cloud.isOn()") and not any(s['label'] == 'Téléphone Android' for s in server()['subs']))
     F = pc.new_page(); F.goto((SCR / 'build/to-do-list.html').as_uri()); F.wait_for_timeout(300)
     F.click('#btnSettings')
     check('version fichier : pas de synchronisation (aucune connexion possible)', not F.locator('#setSyncSec').is_visible())

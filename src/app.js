@@ -2259,7 +2259,7 @@ function setupCardWanted() {
 function renderStatus() {
   renderSetupCard();
   let s = fileSync.status();
-  if (typeof cloud !== 'undefined' && cloud.enabled && (cloud.isOn() || cloud.status === 'signedout')) {
+  if (typeof cloud !== 'undefined' && cloud.enabled && (cloud.isOn() || cloud.isDead())) {
     const c = cloud.statusLine();
     if (!(c.tone === 'ok' && (s.tone === 'warn' || s.tone === 'err'))) s = c;
   }
@@ -3052,25 +3052,59 @@ function onKey(e) {
 {{QR_JS}}
 /* =====================================================================
    Synchronisation entre appareils, chiffrée de bout en bout
-   Le serveur (Supabase) ne reçoit que du contenu chiffré sur l'appareil.
+   Les appareils sont jumelés par un « code de synchronisation » affiché en QR code
+   (pas d'e-mail, pas de mot de passe). Du code, chaque appareil dérive :
+     - une clé de chiffrement (AES-GCM 256), qui ne quitte jamais l'appareil ;
+     - une clé d'accès, envoyée au serveur, qui n'en garde que l'empreinte.
+   Le serveur (Supabase) ne reçoit que du contenu chiffré.
    ===================================================================== */
 const CLOUD_URL = '{{CLOUD_URL}}';
 const CLOUD_KEY = '{{CLOUD_KEY}}';
-const KEY_CLOUD = 'odj.cloud.v1';
+const KEY_CLOUD = 'odj.cloud.v2';
 const SETTINGS_ITEM = '__settings';
 const SYNCED_SETTINGS = ['addTo', 'holidays', 'urgentDays', 'remindTime'];
-const PBKDF2_ITER = 310000;
+const INITIAL_HASH = typeof location !== 'undefined' ? location.hash : '';
 const enc8 = new TextEncoder(), dec8 = new TextDecoder();
 const b64e = (buf) => { const b = new Uint8Array(buf); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
 const b64d = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const b64urlToBytes = (s) => b64d(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+const hexOf = (buf) => Array.from(new Uint8Array(buf), (x) => x.toString(16).padStart(2, '0')).join('');
+
+/* ---------- Code de synchronisation : 19 caractères aléatoires + 1 de contrôle (95 bits) ---------- */
+const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // base 32 de Crockford : pas de I, L, O, U
+const syncCode = {
+  check(body) { let s = 0; for (let i = 0; i < body.length; i++) s += (i + 1) * CODE_ALPHABET.indexOf(body[i]); return CODE_ALPHABET[s % 32]; },
+  create() {
+    const r = crypto.getRandomValues(new Uint8Array(19));
+    const body = Array.from(r, (x) => CODE_ALPHABET[x & 31]).join('');
+    return body + this.check(body);
+  },
+  /* Saisie tolérante : minuscules, espaces, tirets ; O lu comme 0, I et L comme 1. */
+  normalize(s) {
+    return String(s || '').toUpperCase().replace(/[^0-9A-Z]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+  },
+  valid(c) { return /^[0-9A-HJKMNP-TV-Z]{20}$/.test(c) && this.check(c.slice(0, 19)) === c[19]; },
+  format(c) { return c.match(/.{1,5}/g).join('-'); },
+  /* Code contenu dans un texte scanné : lien de jumelage (#lien=…) ou code seul. */
+  fromText(text) {
+    const t = String(text || '').trim();
+    const m = t.match(/[#&?]lien=([0-9A-Za-z-]{20,30})/);
+    const c = this.normalize(m ? m[1] : t);
+    return this.valid(c) ? c : null;
+  },
+  async keys(code) {
+    const base = await crypto.subtle.importKey('raw', enc8.encode(code), 'HKDF', false, ['deriveBits', 'deriveKey']);
+    const salt = enc8.encode('to-do-list/sync/v2');
+    const access = hexOf(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: enc8.encode('acces') }, base, 256));
+    const key = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: enc8.encode('chiffrement') },
+      base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    return { access, key };
+  },
+};
+function appBaseUrl() { return location.origin + location.pathname.replace(/index\.html$/, ''); }
+function pairUrl(code) { return `${appBaseUrl()}#lien=${code}`; }
 
 const vault = {
-  async derive(pass, saltB64, iterations) {
-    const base = await crypto.subtle.importKey('raw', enc8.encode(pass.normalize('NFC')), 'PBKDF2', false, ['deriveKey']);
-    return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt: b64d(saltB64), iterations },
-      base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-  },
   async encrypt(key, value, aad) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc8.encode(aad) }, key, enc8.encode(JSON.stringify(value)));
@@ -3086,29 +3120,36 @@ const vault = {
 
 const cloud = {
   enabled: !!CLOUD_URL && !CLOUD_URL.startsWith('{{') && pwaWeb(),
-  st: null,          // état persistant (session, curseur, ce qui a déjà été envoyé)
-  key: null,         // clé de chiffrement (CryptoKey non exportable), gardée dans IndexedDB
-  status: 'off',     // off | locked | ready | syncing | offline | error | signedout
+  st: null,          // état persistant : code, curseur, ce qui a déjà été envoyé
+  key: null,         // clé de chiffrement (CryptoKey non exportable), aussi gardée dans IndexedDB pour les notifications
+  access: null,      // clé d'accès au serveur (dérivée du code)
+  status: 'off',     // off | ready | syncing | offline | error | unpaired
   error: '',
   running: false, again: false, timer: null, backoff: 0, lastOk: 0,
 
+  blank() { return { pushed: {}, delPushed: {} }; },
   load() {
     try { this.st = JSON.parse(lsGet(KEY_CLOUD) || 'null'); } catch (e) { this.st = null; }
-    if (!this.st || typeof this.st !== 'object') this.st = {};
+    if (!this.st || typeof this.st !== 'object') this.st = this.blank();
     this.st.pushed ||= {}; this.st.delPushed ||= {};
   },
   save() { lsSet(KEY_CLOUD, JSON.stringify(this.st)); },
-  isOn() { return this.enabled && !!(this.st && this.st.session); },
+  isOn() { return this.enabled && !!(this.st && this.st.code) && !this.st.dead; },
+  isDead() { return this.enabled && !!(this.st && this.st.code && this.st.dead); },
 
   async init() {
     if (!this.enabled) return;
     this.load();
-    if (!this.st.session) { this.status = 'off'; return; }
-    try { this.key = await idb.get('cryptoKey'); } catch (e) { this.key = null; }
-    if (!this.key || this.st.keyUser !== this.st.session.user_id || !this.st.keySalt) { this.key = null; this.status = 'locked'; renderStatus(); return; }
-    this.status = 'ready';
-    this.bind();
-    this.sync();
+    if (this.st.code) await this.applyCode();
+    if (this.isDead()) this.status = 'unpaired';
+    renderStatus();
+    if (this.isOn()) { this.status = 'ready'; this.bind(); this.sync(); }
+  },
+  /* Dérive les clés du code enregistré (et les met à disposition des notifications). */
+  async applyCode() {
+    const { access, key } = await syncCode.keys(this.st.code);
+    this.access = access; this.key = key;
+    try { await idb.set('cryptoKey', key); } catch (e) { /* notifications : texte générique */ }
   },
   bound: false,
   bind() {
@@ -3123,134 +3164,92 @@ const cloud = {
   schedule() {
     if (!this.key || !this.isOn()) return;
     if (this.running) { this.again = true; return; }
-    if (this.status === 'locked' || this.status === 'signedout') return;
     clearTimeout(this.timer);
     this.timer = setTimeout(() => this.sync(), 1500);
   },
 
-  /* ---------- appels au serveur ---------- */
-  async api(path, { method = 'GET', body, auth = true, prefer } = {}) {
+  /* ---------- appels au serveur (fonctions de la base uniquement) ---------- */
+  async rpc(name, args = {}) {
     const headers = { apikey: CLOUD_KEY, 'Content-Type': 'application/json' };
-    if (prefer) headers.Prefer = prefer;
-    if (auth) headers.Authorization = `Bearer ${await this.token()}`;
+    if (!CLOUD_KEY.startsWith('sb_')) headers.Authorization = `Bearer ${CLOUD_KEY}`; // ancienne clé « anon » (JWT)
     let r;
     try {
-      r = await fetch(CLOUD_URL + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
+      r = await fetch(`${CLOUD_URL}/rest/v1/rpc/${name}`, { method: 'POST', headers, body: JSON.stringify(args), cache: 'no-store' });
     } catch (e) { const err = new Error('réseau'); err.offline = true; throw err; }
-    if (r.status === 401 && auth && !this._retried) {
-      this._retried = true;
-      try { await this.refresh(true); return await this.api(path, { method, body, auth, prefer }); } finally { this._retried = false; }
-    }
     const text = await r.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
     if (!r.ok) {
-      const err = new Error((data && (data.msg || data.message || data.error_description || data.error)) || `erreur ${r.status}`);
-      err.status = r.status; err.code = data && (data.error_code || data.code);
-      if (/coffre changé/.test(err.message)) err.vaultChanged = true;
+      const err = new Error((data && (data.message || data.msg || data.error)) || `erreur ${r.status}`);
+      err.status = r.status; err.code = data && data.code;
+      if (/compte inconnu/.test(err.message)) err.unknown = true;
       throw err;
     }
     return data;
   },
-  async token() {
-    const s = this.st.session;
-    if (!s) { const e = new Error('non connecté'); e.signedOut = true; throw e; }
-    if (Date.now() > s.expires_at - 60000) await this.refresh();
-    return this.st.session.access_token;
-  },
-  async refresh(force = false) {
-    if (!this.st.session) return;
-    if (!force && Date.now() <= this.st.session.expires_at - 60000) return;
-    if (this._refreshing) return this._refreshing;
-    const stale = this.st.session.access_token;
-    this._refreshing = withLock('odj-cloud-auth', async () => {
-      // une autre fenêtre a peut-être déjà renouvelé la session : on relit avant d'agir
-      this.reloadSession();
-      const s = this.st.session;
-      if (!s) { const err = new Error('session expirée'); err.signedOut = true; throw err; }
-      if (s.access_token !== stale && Date.now() <= s.expires_at - 60000) return;
-      try {
-        const d = await this.api('/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: s.refresh_token }, auth: false });
-        this.setSession(d);
-      } catch (e) {
-        if (!e.offline && e.status && e.status < 500) { // session expirée ou révoquée : il faut se reconnecter
-          this.st.session = null; this.save(); this.status = 'signedout'; renderStatus();
-          const err = new Error('session expirée'); err.signedOut = true; throw err;
-        }
-        throw e;
-      }
-    }).finally(() => { this._refreshing = null; });
-    return this._refreshing;
-  },
-  reloadSession() {
-    try { const fresh = JSON.parse(lsGet(KEY_CLOUD) || 'null'); if (fresh && 'session' in fresh) this.st.session = fresh.session; } catch (e) { /* ignore */ }
-  },
-  setSession(d) {
-    this.st.session = { access_token: d.access_token, refresh_token: d.refresh_token, expires_at: Date.now() + (d.expires_in || 3600) * 1000, user_id: d.user && d.user.id, email: d.user && d.user.email };
-    this.save();
-  },
-  rpc(name, args) { return this.api(`/rest/v1/rpc/${name}`, { method: 'POST', body: args }); },
+  call(name, args = {}) { return this.rpc(name, { p_key: this.access, ...args }); },
 
-  /* ---------- connexion ---------- */
-  async requestCode(email) {
-    await this.api('/auth/v1/otp', { method: 'POST', body: { email, create_user: true }, auth: false });
-    this.st.email = email; this.save();
+  /* ---------- jumelage ---------- */
+  /* Première synchronisation : cet appareil crée le code. */
+  async create() {
+    const code = syncCode.create();
+    const { access } = await syncCode.keys(code);
+    await this.rpc('create_account', { p_key: access });
+    await this.adopt(code);
+    return code;
   },
-  async verifyCode(email, code) {
-    const d = await this.api('/auth/v1/verify', { method: 'POST', body: { type: 'email', email, token: code }, auth: false });
-    const prevUser = (this.st.session && this.st.session.user_id) || this.st.keyUser;
-    if (prevUser && prevUser !== (d.user && d.user.id)) { const ep = this.st.endpoint; this.resetLocalState(); this.st.endpoint = ep; this.st.pushAt = 0; }
-    this.setSession(d);
-    return this.api('/rest/v1/vault?select=salt,verifier,iterations', {}).then((rows) => (rows && rows[0]) || null);
-  },
-  async unlock(pass, existing) {
-    let v = existing;
-    if (!v) {
-      const salt = b64e(crypto.getRandomValues(new Uint8Array(16)));
-      const key = await vault.derive(pass, salt, PBKDF2_ITER);
-      const verifier = await vault.encrypt(key, { ok: 'to-do-list' }, 'verifier');
-      try {
-        await this.api('/rest/v1/vault', { method: 'POST', body: { salt, verifier, iterations: PBKDF2_ITER }, prefer: 'return=minimal' });
-        return this.useKey(key, salt);
-      } catch (e) {
-        if (e.status !== 409) throw e; // un autre appareil vient de créer le coffre : on vérifie avec le sien
-        v = (await this.api('/rest/v1/vault?select=salt,verifier,iterations', {}))[0];
-      }
+  /* Rejoindre une liste existante avec son code (QR scanné ou saisi). */
+  async join(code) {
+    const { access } = await syncCode.keys(code);
+    try {
+      await this.rpc('pull_items', { p_key: access, p_since: new Date(Date.now() + 864e5).toISOString() }); // vérifie le code sans rien télécharger
+    } catch (e) {
+      if (e.unknown) { const err = new Error('Ce code n\'est pas (ou plus) valable. Affichez le QR code à jour sur un appareil déjà connecté.'); err.badCode = true; throw err; }
+      throw e;
     }
-    const key = await vault.derive(pass, v.salt, v.iterations || PBKDF2_ITER);
-    try { await vault.decrypt(key, v.verifier, 'verifier'); } catch (e) { const err = new Error('Phrase secrète incorrecte.'); err.badPass = true; throw err; }
-    return this.useKey(key, v.salt);
+    await this.adopt(code);
   },
-  async useKey(key, salt) {
-    this.key = key;
-    await idb.set('cryptoKey', key);
-    if (this.st.keySalt !== salt) { // nouveau coffre (première fois, ou phrase secrète changée) : tout renvoyer et tout relire
-      this.st.pushed = {}; this.st.delPushed = {}; this.st.cursor = null; this.st.remSig = null; this.st.settingsPushed = null; this.st.pushAt = 0;
-    }
-    this.st.keySalt = salt;
-    this.st.keyUser = this.st.session.user_id;
-    this.st.label ||= deviceLabel();
+  async adopt(code) {
+    const prev = this.st || this.blank();
+    if (prev.code && prev.code !== code && prev.pushWanted && !prev.dead) { try { await this.unsubscribePush(); } catch (e) { /* hors ligne */ } }
+    this.st = { ...this.blank(), code, label: prev.label || deviceLabel(), pushWanted: prev.pushWanted, endpoint: prev.endpoint };
     this.save();
+    await this.applyCode();
     this.status = 'ready';
     this.bind();
     await this.sync({ first: true });
   },
-  resetLocalState() {
-    this.st = { pushed: {}, delPushed: {}, email: this.st.email };
-    this.key = null;
-    idb.del('cryptoKey').catch(() => {});
+  /* Nouveau code : les autres appareils sont déconnectés (appareil perdu, code partagé par erreur). */
+  async changeCode() {
+    const oldAccess = this.access;
+    await this.sync(); // récupère d'abord les dernières modifications
+    if (this.status !== 'ready') throw new Error(this.status === 'offline' ? 'Pas de connexion au serveur : réessayez une fois en ligne.' : this.error || 'Synchronisation impossible pour le moment.');
+    const code = syncCode.create();
+    const { access } = await syncCode.keys(code);
+    await this.rpc('create_account', { p_key: access });
+    const keep = { pushWanted: this.st.pushWanted, label: this.st.label };
+    this.st = { ...this.blank(), code, ...keep };
+    this.save();
+    await this.applyCode();
+    await this.sync();
+    if (this.status !== 'ready') throw new Error('Le nouveau code est créé, mais l\'envoi des tâches n\'a pas abouti : réessayez.');
+    await this.rpc('delete_account', { p_key: oldAccess }).catch((e) => console.warn('Ancien code', e));
+    return code;
   },
-  async signOut() {
+  async disconnect() {
     try { await this.unsubscribePush(); } catch (e) { /* hors ligne : tant pis */ }
-    try { await this.api('/auth/v1/logout', { method: 'POST', body: {} }); } catch (e) { /* ignore */ }
-    this.resetLocalState(); this.save();
+    this.st = this.blank(); this.save();
+    this.key = null; this.access = null;
+    idb.del('cryptoKey').catch(() => {});
     this.status = 'off'; renderStatus();
   },
-  async resetCloud() {
-    await this.rpc('reset_cloud', {});
-    const email = this.st.email, session = this.st.session;
-    this.resetLocalState(); this.st.session = session; this.st.email = email; this.save();
-    this.status = 'locked'; renderStatus();
+  /* Le code a été changé (ou supprimé) depuis un autre appareil. */
+  markDead() {
+    this.st.dead = true; this.save();
+    this.status = 'unpaired'; this.error = '';
+    clearTimeout(this.timer);
+    renderStatus(); refreshSettings();
+    toast('Le code de synchronisation a été changé sur un autre appareil : scannez le nouveau QR code pour reprendre. Vos tâches restent sur cet appareil.', { duration: 12000 });
   },
 
   /* ---------- synchronisation ---------- */
@@ -3262,16 +3261,19 @@ const cloud = {
     try { await withLock('odj-cloud-sync', () => this._sync(opts)); } finally { this.running = false; if (this.again) { this.again = false; this.schedule(); } }
   },
   async _sync({ first = false } = {}) {
-    // une autre fenêtre a pu avancer : on repart de l'état partagé
-    try { const fresh = JSON.parse(lsGet(KEY_CLOUD) || 'null'); if (fresh && fresh.session) { this.st = { ...this.st, ...fresh }; this.st.pushed ||= {}; this.st.delPushed ||= {}; } } catch (e) { /* ignore */ }
+    // une autre fenêtre a pu avancer (ou changer de code) : on repart de l'état partagé
+    try {
+      const fresh = JSON.parse(lsGet(KEY_CLOUD) || 'null');
+      if (fresh && fresh.code) {
+        const codeChanged = fresh.code !== this.st.code;
+        this.st = { ...this.st, ...fresh }; this.st.pushed ||= {}; this.st.delPushed ||= {};
+        if (codeChanged) await this.applyCode();
+      } else if (fresh && !fresh.code && this.st.code) { this.st = this.blank(); this.key = null; this.status = 'off'; renderStatus(); return; }
+    } catch (e) { /* ignore */ }
     if (!this.key || !this.isOn()) return;
     const prev = this.status;
     this.status = 'syncing'; if (prev !== 'ready') renderStatus();
     try {
-      // La phrase secrète a-t-elle été changée depuis un autre appareil ? Alors cette clé est périmée :
-      // on s'arrête avant d'envoyer quoi que ce soit qui serait illisible pour les autres appareils.
-      const v = await this.api('/rest/v1/vault?select=salt', {});
-      if (!v || !v[0] || v[0].salt !== this.st.keySalt) { await this.lockStale(); return; }
       await this.pull();
       await this.push();
       await this.pushReminders();
@@ -3281,42 +3283,31 @@ const cloud = {
       if (first && !$('#dlgSync').open) toast('Synchronisation active : vos tâches sont maintenant sur tous vos appareils connectés.', { duration: 7000 });
     } catch (e) {
       console.warn('Synchronisation', e);
-      if (e.signedOut) this.status = 'signedout';
-      else if (e.offline) this.status = 'offline';
+      if (e.unknown) { this.markDead(); return; }
+      if (e.offline) this.status = 'offline';
       else { this.status = 'error'; this.error = e.message || String(e); }
-      if (e.vaultChanged) { this.lockStale(); return; }
-      if (this.status !== 'signedout') {
-        this.backoff = Math.min(300000, (this.backoff || 5000) * 2);
-        clearTimeout(this.timer); this.timer = setTimeout(() => this.sync(), this.backoff);
-      }
+      this.backoff = Math.min(300000, (this.backoff || 5000) * 2);
+      clearTimeout(this.timer); this.timer = setTimeout(() => this.sync(), this.backoff);
     } finally {
       renderStatus(); refreshSettings();
     }
   },
-  async lockStale() {
-    this.key = null; await idb.del('cryptoKey').catch(() => {});
-    this.status = 'locked'; this.error = '';
-    renderStatus(); refreshSettings();
-    toast('La phrase secrète a été changée depuis un autre appareil : saisissez la nouvelle pour reprendre la synchronisation.', { duration: 10000 });
-  },
   async pull() {
     // léger recouvrement pour ne rien rater (écritures simultanées) ; la fusion rend les doublons sans effet
-    const since = this.st.cursor ? new Date(Date.parse(this.st.cursor) - 30000).toISOString() : '1970-01-01T00:00:00Z';
+    const since = this.st.cursor ? new Date(Date.parse(this.st.cursor) - 30000).toISOString() : null;
     const rows = [];
-    const cols = 'select=id,updated_at,deleted,data,modified_at&order=modified_at.asc,id.asc&limit=500';
-    let page = await this.api(`/rest/v1/items?${cols}&modified_at=gte.${encodeURIComponent(since)}`);
+    let page = await this.call('pull_items', since ? { p_since: since, p_after_id: '' } : {});
     rows.push(...page);
     while (page.length === 500) {
       const last = page[page.length - 1];
-      const or = `(modified_at.gt."${last.modified_at}",and(modified_at.eq."${last.modified_at}",id.gt."${last.id}"))`;
-      page = await this.api(`/rest/v1/items?${cols}&or=${encodeURIComponent(or)}`);
+      page = await this.call('pull_items', { p_since: last.modified_at, p_after_id: last.id });
       rows.push(...page);
     }
     if (!rows.length) return;
     const tasks = [], deleted = {};
-    let settings = null, maxMod = this.st.cursor || since;
+    let settings = null, maxMod = this.st.cursor || '';
     for (const r of rows) {
-      if (r.modified_at > maxMod) maxMod = r.modified_at;
+      if (!maxMod || Date.parse(r.modified_at) > Date.parse(maxMod)) maxMod = r.modified_at;
       if (r.deleted) { if (r.id !== SETTINGS_ITEM) deleted[r.id] = Number(r.updated_at); continue; }
       let v;
       try { v = await vault.decrypt(this.key, r.data, r.id); } catch (e) { console.warn('Élément illisible', r.id); continue; }
@@ -3369,7 +3360,7 @@ const cloud = {
     }
     const rejected = [];
     const send = async (batch) => {
-      const res = await this.rpc('push_items', { rows: batch, p_salt: this.st.keySalt });
+      const res = await this.call('push_items', { p_rows: batch });
       const rej = new Set((res && res.rejected) || []);
       for (const r of batch) {
         if (rej.has(r.id)) { rejected.push(r.id); continue; }
@@ -3382,9 +3373,9 @@ const cloud = {
     for (let i = 0; i < rows.length; i += 200) {
       const batch = rows.slice(i, i + 200);
       try { await send(batch); } catch (e) {
-        if (e.vaultChanged || e.offline || e.signedOut || !(e.status >= 400 && e.status < 500) || batch.length === 1) throw e;
+        if (e.unknown || e.offline || !(e.status >= 400 && e.status < 500) || batch.length === 1) throw e;
         // une ligne refusée (trop volumineuse…) ne doit pas bloquer les autres
-        for (const r of batch) { try { await send([r]); } catch (e2) { if (e2.vaultChanged || e2.offline || e2.signedOut) throw e2; console.warn('Élément non envoyé', r.id, e2); this.skipped = r.id; } }
+        for (const r of batch) { try { await send([r]); } catch (e2) { if (e2.unknown || e2.offline) throw e2; console.warn('Élément non envoyé', r.id, e2); this.skipped = r.id; } }
       }
     }
     if (rejected.length) await this.fetchServerVersions(rejected);
@@ -3394,8 +3385,7 @@ const cloud = {
     const list = ids.filter((id) => id !== SETTINGS_ITEM);
     if (ids.includes(SETTINGS_ITEM)) this.st.cursor = null; // relire les réglages au prochain passage
     for (let i = 0; i < list.length; i += 100) {
-      const part = list.slice(i, i + 100).map((id) => `"${id}"`).join(',');
-      const rows = await this.api(`/rest/v1/items?select=id,updated_at,deleted,data,modified_at&id=in.(${encodeURIComponent(part)})`);
+      const rows = await this.call('get_items', { p_ids: list.slice(i, i + 100) });
       let changed = false;
       for (const r of rows) {
         const at = Number(r.updated_at), local = byId(r.id);
@@ -3428,7 +3418,7 @@ const cloud = {
     if (sig === this.st.remSig) return;
     const rows = [];
     for (const [t, n] of list) rows.push({ task_id: t.id, fire_at: n, payload: await vault.encrypt(this.key, { title: truncate(t.title || 'Rappel', 140), body: truncate(notifBody(t), 240) }, `rem:${t.id}`) });
-    await this.rpc('set_reminders', { rows, p_salt: this.st.keySalt });
+    await this.call('set_reminders', { p_rows: rows });
     this.st.remSig = sig; this.save();
   },
 
@@ -3440,7 +3430,8 @@ const cloud = {
     if (!this.pushSupported()) { toast('Ce navigateur ne permet pas les notifications en arrière-plan.'); return false; }
     const p = await Notification.requestPermission(); // appel immédiat, dans le geste de l'utilisateur
     if (p !== 'granted') { toast('Notifications refusées. Elles se réactivent dans les réglages du téléphone ou du navigateur.', { duration: 8000 }); refreshSettings(); return false; }
-    const ok = await this.subscribe();
+    let ok = false;
+    try { ok = await this.subscribe(); } catch (e) { toast(e.offline ? 'Pas de connexion au serveur : réessayez une fois en ligne.' : `Activation impossible : ${e.message}`); }
     if (ok) { this.st.pushWanted = true; this.save(); toast('Notifications activées sur cet appareil, même application fermée.'); }
     refreshSettings(); reminders.renderSettings();
     return ok;
@@ -3453,8 +3444,8 @@ const cloud = {
     if (sub && this.st.vapid && this.st.vapid !== pub) { await sub.unsubscribe().catch(() => {}); sub = null; }
     if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(pub) });
     const j = sub.toJSON();
-    if (this.st.endpoint && this.st.endpoint !== j.endpoint) await this.rpc('unregister_push', { p_endpoint: this.st.endpoint }).catch(() => {});
-    await this.rpc('register_push', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth, p_label: this.st.label || deviceLabel() });
+    if (this.st.endpoint && this.st.endpoint !== j.endpoint) await this.call('unregister_push', { p_endpoint: this.st.endpoint }).catch(() => {});
+    await this.call('register_push', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth, p_label: this.st.label || deviceLabel() });
     this.st.vapid = pub; this.st.pushAt = Date.now(); this.st.endpoint = j.endpoint; this.save();
     return true;
   },
@@ -3463,29 +3454,27 @@ const cloud = {
     const reg = await navigator.serviceWorker.getRegistration();
     const sub = reg && await reg.pushManager.getSubscription();
     const endpoints = new Set([sub && sub.endpoint, this.st.endpoint].filter(Boolean));
-    for (const ep of endpoints) await this.rpc('unregister_push', { p_endpoint: ep }).catch(() => {});
+    if (this.access) for (const ep of endpoints) await this.call('unregister_push', { p_endpoint: ep }).catch(() => {});
     if (sub) await sub.unsubscribe().catch(() => {});
     this.st.pushWanted = false; this.st.endpoint = null; this.save();
   },
-  /* Réabonne l'appareil si besoin (abonnement expiré, ou une fois par jour pour rester à jour). */
+  /* Réabonne l'appareil si besoin (abonnement expiré, nouveau code, ou une fois par jour pour rester à jour). */
   async ensurePush() {
     if (!this.st.pushWanted || !this.pushSupported() || Notification.permission !== 'granted') return;
     const reg = await navigator.serviceWorker.getRegistration();
     const sub = reg && await reg.pushManager.getSubscription();
-    if (!sub || sub.endpoint !== this.st.endpoint || Date.now() - (this.st.pushAt || 0) > 86400000) await this.subscribe().catch((e) => console.warn('Abonnement', e));
+    if (!sub || sub.endpoint !== this.st.endpoint || Date.now() - (this.st.pushAt || 0) > 86400000) await this.subscribe().catch((e) => { if (e.unknown) throw e; console.warn('Abonnement', e); });
   },
   pushActive() { return !!(this.st && this.st.pushWanted && typeof Notification !== 'undefined' && Notification.permission === 'granted'); },
 
   statusLine() {
-    const email = (this.st.session && this.st.session.email) || this.st.email || '';
+    if (this.isDead()) return { tone: 'warn', icon: 'alert', text: 'Le code de synchronisation a changé : scannez le nouveau QR code.', action: { id: 'sync-scan', label: 'Scanner' } };
     switch (this.status) {
-      case 'locked': return { tone: 'warn', icon: 'alert', text: 'Synchronisation en attente de votre phrase secrète.', action: { id: 'sync-unlock', label: 'Déverrouiller' } };
-      case 'signedout': return { tone: 'warn', icon: 'alert', text: 'Synchronisation interrompue : reconnectez-vous.', action: { id: 'sync-login', label: 'Se reconnecter' } };
       case 'offline': return { tone: '', icon: 'sync', text: 'Hors ligne : vos modifications seront synchronisées au retour du réseau.', title: 'Vos tâches restent enregistrées sur cet appareil.' };
       case 'error': return { tone: 'err', icon: 'alert', text: `Synchronisation impossible : ${this.error}`, action: { id: 'sync-now', label: 'Réessayer' } };
       default: {
         const at = this.lastOk || this.st.lastSync;
-        return { tone: 'ok', icon: 'sync', text: at ? `Synchronisé à ${F_TIME.format(new Date(at))}` : 'Synchronisation…', title: `Compte ${email}. Chiffré de bout en bout.` };
+        return { tone: 'ok', icon: 'sync', text: at ? `Synchronisé à ${F_TIME.format(new Date(at))}` : 'Synchronisation…', title: 'Chiffré de bout en bout : le serveur ne peut pas lire vos tâches.' };
       }
     }
   },
@@ -3513,132 +3502,226 @@ function deviceLabel() {
   return 'Navigateur';
 }
 
-/* ---------- Assistant de connexion ---------- */
-const syncUi = {
-  step: 'email', vaultRow: null, email: '', resendAt: 0,
-  open(step) {
-    const dlg = $('#dlgSync');
-    this.step = step || (cloud.st.session && !cloud.key ? 'pass' : 'email');
-    if (this.step === 'pass') {
-      this.vaultRow = undefined;
-      this.render(); dlg.showModal();
-      cloud.api('/rest/v1/vault?select=salt,verifier,iterations', {}).then((rows) => { this.vaultRow = rows && rows[0] || null; this.render(); })
-        .catch((e) => { if (e.signedOut) { this.step = 'email'; this.render(); } else this.fail(e); });
+/* ---------- Scanner de QR code (appareil photo, dans l'application) ---------- */
+const scanner = {
+  stream: null, raf: null, busy: false, detector: null, jsqrLoading: null,
+  async start(video, onCode, onState) {
+    this.stop();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { onState('nocam'); return; }
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    } catch (e) {
+      onState(e && (e.name === 'NotAllowedError' || e.name === 'SecurityError') ? 'denied' : 'nocam');
       return;
     }
-    this.render(); dlg.showModal();
+    if (!video.isConnected) { this.stop(); return; }
+    video.srcObject = this.stream;
+    video.setAttribute('playsinline', ''); video.muted = true;
+    try { await video.play(); } catch (e) { /* lecture automatique : relancée au premier geste */ }
+    onState('live');
+    if ('BarcodeDetector' in window) {
+      try { const f = await BarcodeDetector.getSupportedFormats(); if (f.includes('qr_code')) this.detector = new BarcodeDetector({ formats: ['qr_code'] }); } catch (e) { this.detector = null; }
+    }
+    if (!this.detector) await this.loadJsqr().catch(() => onState('nolib'));
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let last = 0;
+    const tick = async (ts) => {
+      if (!this.stream) return;
+      this.raf = requestAnimationFrame(tick);
+      if (this.busy || ts - last < 150 || video.readyState < 2) return;
+      last = ts; this.busy = true;
+      try {
+        let text = null;
+        if (this.detector) {
+          const codes = await this.detector.detect(video);
+          if (codes && codes[0]) text = codes[0].rawValue;
+        } else if (self.jsQR) {
+          const w = video.videoWidth, h = video.videoHeight;
+          const scale = Math.min(1, 720 / Math.max(w, h));
+          canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const res = self.jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
+          if (res) text = res.data;
+        }
+        if (text && this.stream) onCode(text);
+      } catch (e) { /* image suivante */ } finally { this.busy = false; }
+    };
+    this.raf = requestAnimationFrame(tick);
   },
+  loadJsqr() {
+    if (self.jsQR) return Promise.resolve();
+    this.jsqrLoading ||= new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'jsqr.js'; s.async = true;
+      s.onload = () => (self.jsQR ? resolve() : reject(new Error('jsQR')));
+      s.onerror = () => { this.jsqrLoading = null; reject(new Error('jsQR')); };
+      document.head.appendChild(s);
+    });
+    return this.jsqrLoading;
+  },
+  stop() {
+    cancelAnimationFrame(this.raf); this.raf = null;
+    if (this.stream) { for (const t of this.stream.getTracks()) t.stop(); this.stream = null; }
+  },
+};
+
+/* ---------- Fenêtre de synchronisation ---------- */
+const syncUi = {
+  step: 'start', pending: null, scanMsg: '',
+  open(step) {
+    const dlg = $('#dlgSync');
+    this.step = step || (cloud.isOn() ? 'show' : 'start');
+    this.render();
+    if (!dlg.open) dlg.showModal();
+  },
+  close() { scanner.stop(); const d = $('#dlgSync'); if (d.open) d.close(); },
   fail(e) {
     const m = $('#syncMsg');
     let txt = e.message || String(e);
-    if (e.offline) txt = 'Pas de connexion au serveur. Vérifiez le réseau (le réseau de l\'entreprise bloque peut-être l\'adresse).';
-    else if (e.status === 429) txt = 'Trop de demandes : patientez une minute avant de redemander un code.';
-    else if (/expired|invalid/i.test(txt) && this.step === 'code') txt = 'Code incorrect ou expiré. Vérifiez le dernier e-mail reçu, ou demandez un nouveau code.';
+    if (e.offline) txt = 'Pas de connexion au serveur. Vérifiez le réseau, puis réessayez.';
     if (m) { m.textContent = txt; m.hidden = false; }
     this.busy(false);
   },
   busy(on) { for (const b of $$('#dlgSync .btn')) b.disabled = on; const s = $('#syncSpin'); if (s) s.hidden = !on; },
   render() {
+    scanner.stop();
     const body = $('#syncBody');
-    const email = cloud.st.email || '';
+    const code = cloud.st && cloud.st.code;
     const steps = {
-      email: `<p class="setText">Retrouvez la même liste sur votre ordinateur et votre téléphone. Vos tâches sont chiffrées sur l'appareil avant d'être envoyées : le serveur ne peut pas les lire.</p>
-        <label class="fLabel" for="syncEmail">Votre adresse e-mail</label>
-        <input class="field wide" id="syncEmail" type="email" autocomplete="email" inputmode="email" placeholder="prenom.nom@exemple.com" value="${esc(email)}">
-        <p class="fHint">Vous recevrez un code à 6 chiffres. Pas de mot de passe à retenir.</p>`,
-      code: `<p class="setText">Un code a été envoyé à <strong>${esc(this.email)}</strong>. Il arrive en général en moins d'une minute ; pensez aux courriers indésirables.</p>
-        <label class="fLabel" for="syncCode">Code reçu par e-mail</label>
-        <input class="field code" id="syncCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="123456">
-        <p class="fHint"><button type="button" class="linkBtn" data-sync="resend">Renvoyer le code</button> <button type="button" class="linkBtn" data-sync="back">Changer d'adresse</button></p>`,
-      pass: this.vaultRow === undefined
-        ? '<p class="setText">Connexion au serveur…</p>'
-        : this.vaultRow
-          ? `<p class="setText">Saisissez la phrase secrète choisie lors de la première synchronisation.</p>
-            <label class="fLabel" for="syncPass">Phrase secrète</label>
-            <input class="field wide" id="syncPass" type="password" autocomplete="current-password">
-            <p class="fHint"><button type="button" class="linkBtn" data-sync="forgot">Phrase secrète oubliée ?</button></p>`
-          : `<p class="setText">Choisissez une phrase secrète. Elle chiffre vos tâches : sans elle, personne, pas même le serveur, ne peut les lire. Vous la saisirez une fois sur chaque appareil.</p>
-            <label class="fLabel" for="syncPass">Phrase secrète</label>
-            <input class="field wide" id="syncPass" type="password" autocomplete="new-password" placeholder="par exemple : quatre mots que vous retenez">
-            <label class="fLabel" for="syncPass2">Confirmez</label>
-            <input class="field wide" id="syncPass2" type="password" autocomplete="new-password">
-            <p class="fHint" id="syncStrength">Au moins 12 caractères. Une phrase de quatre mots est facile à retenir et très solide.</p>
-            <p class="fHint">Les tâches déjà présentes sur cet appareil seront ajoutées à ce compte.</p>
-            <label class="inlineCheck"><input type="checkbox" id="syncNoted"> J'ai noté ma phrase secrète : elle ne peut pas être récupérée.</label>`,
-      forgot: `<p class="setText">Sans la phrase secrète, la copie de vos tâches sur le serveur est illisible. Vous pouvez l'effacer et repartir de zéro : les tâches enregistrées sur <strong>cet appareil</strong> seront envoyées à nouveau, chiffrées avec une nouvelle phrase.</p>
-        <p class="setText">Sur vos autres appareils, il faudra ensuite saisir la nouvelle phrase. Les tâches qu'ils sont seuls à avoir ne seront plus synchronisées tant qu'ils ne sont pas reconnectés.</p>`,
-      done: `<p class="setText"><strong>Synchronisation active.</strong> ${cloud.pushActive() ? 'Les notifications sont activées sur cet appareil.' : ''}</p>${pushBlockHTML()}${addDeviceHTML()}`,
+      start: `<p class="setText">Retrouvez la même liste sur votre ordinateur et votre téléphone, avec les rappels en notification. Pas d'e-mail ni de mot de passe : les appareils se connectent en scannant un QR code. Vos tâches sont chiffrées sur l'appareil, le serveur ne peut pas les lire.</p>
+        <div class="choice">
+          <button type="button" class="choiceBtn" data-sync="create">${icon('sync')}<span><strong>Première fois</strong><small>Activer la synchronisation sur cet appareil et afficher le QR code</small></span></button>
+          <button type="button" class="choiceBtn" data-sync="scan">${icon('camera')}<span><strong>Un autre appareil est déjà synchronisé</strong><small>Scanner son QR code ou saisir son code</small></span></button>
+        </div>`,
+      show: code ? `<div class="pair">
+          <div class="qr big" id="syncQr" role="img" aria-label="QR code de synchronisation"></div>
+          <div class="pairText">
+            <ol class="steps2">
+              <li>Sur l'autre appareil, ouvrez To do list et touchez <strong>Scanner le QR code</strong>.</li>
+              <li>Visez ce code. C'est tout.</li>
+            </ol>
+            <p class="fHint">Application pas encore installée sur le téléphone ? Scannez ce code avec son appareil photo : il ouvre To do list et le connecte.</p>
+            <p class="codeLine">Ou saisissez : <code class="syncCode">${esc(syncCode.format(code))}</code> <button type="button" class="linkBtn" data-sync="copy">${icon('copy')}Copier</button></p>
+            <p class="fHint warnHint">${icon('alert')}Ce code donne accès à vos tâches : ne le montrez qu'à vos propres appareils.</p>
+          </div>
+        </div>${pushBlockHTML()}` : '',
+      scan: `<div class="scanBox"><video id="scanVideo" playsinline muted autoplay></video><div class="scanFrame" aria-hidden="true"></div><p class="scanState" id="scanState">Activation de l'appareil photo…</p></div>
+        <p class="fHint">Sur l'appareil déjà synchronisé : Réglages, puis <strong>Afficher le QR code</strong>. <button type="button" class="linkBtn" data-sync="enter">Saisir le code à la place</button></p>`,
+      enter: `<p class="setText">Sur l'appareil déjà synchronisé : Réglages, puis <strong>Afficher le QR code</strong>. Le code est écrit sous le QR code.</p>
+        <label class="fLabel" for="syncCodeInput">Code de synchronisation</label>
+        <input class="field wide codeInput" id="syncCodeInput" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" maxlength="29">
+        <p class="fHint">Majuscules, minuscules et tirets : peu importe.</p>`,
+      confirm: this.pending ? `<p class="setText">${cloud.isOn() && cloud.st.code !== this.pending
+          ? 'Cet appareil est déjà synchronisé avec une autre liste. Le connecter à celle-ci ? Ses tâches actuelles y seront ajoutées.'
+          : 'Connecter cet appareil à votre liste synchronisée ? Les tâches déjà présentes ici y seront ajoutées.'}</p>
+        <p class="fHint warnHint">${icon('alert')}Ne continuez que si ce QR code vient de l'un de vos propres appareils.</p>` : '',
+      ios: `<p class="setText">Pour recevoir les rappels en notification sur iPhone, To do list doit être installée sur l'écran d'accueil :</p>
+        <ol class="steps2"><li>Touchez le bouton <strong>Partager</strong> de Safari (le carré avec une flèche vers le haut).</li>
+        <li>Choisissez <strong>« Sur l'écran d'accueil »</strong>, puis Ajouter.</li>
+        <li>Ouvrez To do list depuis son icône et touchez <strong>Scanner le QR code</strong>.</li></ol>
+        <p class="fHint">Vous pouvez aussi connecter Safari tel quel, sans notifications.</p>`,
+      change: `<p class="setText">Un nouveau code remplace l'actuel. <strong>Tous vos autres appareils seront déconnectés</strong> et devront scanner le nouveau QR code. Leurs tâches ne sont pas perdues : elles seront fusionnées à la reconnexion.</p>
+        <p class="setText">À utiliser si un appareil a été perdu ou volé, ou si le code a été montré par erreur.</p>`,
     };
+    const cancel = '<button type="button" class="btn" data-sync="cancel">Annuler</button>';
     const foot = {
-      email: '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="send">Recevoir le code</button>',
-      code: '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="verify">Valider</button>',
-      pass: this.vaultRow === undefined ? '<button type="button" class="btn" data-sync="cancel">Annuler</button>'
-        : this.vaultRow ? '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="unlock">Déverrouiller</button>'
-        : '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="create">Activer la synchronisation</button>',
-      forgot: '<button type="button" class="btn" data-sync="pass">Retour</button><button type="button" class="btn dangerBtn" data-sync="reset">Effacer la copie du serveur</button>',
-      done: '<button type="button" class="btn primary" data-sync="cancel">Terminé</button>',
+      start: cancel,
+      show: '<button type="button" class="btn primary" data-sync="cancel">Terminé</button>',
+      scan: cancel,
+      enter: `${cancel}<button type="button" class="btn primary" data-sync="join-typed">Connecter</button>`,
+      confirm: `${cancel}<button type="button" class="btn primary" data-sync="join-pending">Connecter cet appareil</button>`,
+      ios: `<button type="button" class="btn" data-sync="ios-anyway">Connecter Safari</button><button type="button" class="btn primary" data-sync="cancel">J'ai compris</button>`,
+      change: `${cancel}<button type="button" class="btn dangerBtn" data-sync="change-go">Changer le code</button>`,
     };
-    const titles = { email: 'Synchroniser mes appareils', code: 'Vérification', pass: this.vaultRow ? 'Phrase secrète' : 'Choisir une phrase secrète', forgot: 'Phrase secrète oubliée', done: 'C\'est prêt' };
+    const titles = { start: 'Synchroniser mes appareils', show: 'Ajouter un appareil', scan: 'Scanner le QR code', enter: 'Saisir le code', confirm: 'Connecter cet appareil', ios: 'Installer sur l\'iPhone', change: 'Changer de code' };
     $('#dlgSyncTitle').textContent = titles[this.step];
     body.innerHTML = steps[this.step] + '<p class="fErr" id="syncMsg" role="alert" hidden></p>';
     $('#syncFoot').innerHTML = `<span class="spin" id="syncSpin" hidden aria-label="En cours"></span>${foot[this.step]}`;
     const first = body.querySelector('input');
     if (first) setTimeout(() => first.focus(), 30);
-    if (this.step === 'done') renderQr();
+    if (this.step === 'show') renderQr(code);
+    if (this.step === 'scan') this.startScan();
+  },
+  startScan() {
+    const video = $('#scanVideo'), state = $('#scanState');
+    const say = (t) => { if (state) state.textContent = t; };
+    scanner.start(video, (text) => {
+      const c = syncCode.fromText(text);
+      if (!c) { say('Ce QR code n\'est pas un code To do list. Visez le QR code affiché dans les Réglages de l\'autre appareil.'); return; }
+      scanner.stop();
+      if (navigator.vibrate) try { navigator.vibrate(60); } catch (e) { /* ignore */ }
+      this.joinWith(c);
+    }, (s) => {
+      if (s === 'live') say('Visez le QR code affiché sur l\'autre appareil.');
+      else if (s === 'denied') { say('Accès à l\'appareil photo refusé. Autorisez-le dans les réglages, ou saisissez le code.'); }
+      else if (s === 'nocam') { this.step = 'enter'; this.render(); toast('Pas d\'appareil photo disponible : saisissez le code.'); }
+      else if (s === 'nolib') say('Le lecteur de QR code n\'a pas pu démarrer. Saisissez le code.');
+    });
+  },
+  async joinWith(code) {
+    this.pending = code;
+    if (cloud.isOn() && cloud.st.code === code) { this.step = 'show'; this.render(); toast('Cet appareil est déjà connecté à cette liste.'); return; }
+    this.step = 'confirm'; this.render();
+    if (!(cloud.isOn() && cloud.st.code !== code)) await this.act('join-pending'); // rien à confirmer : on connecte
   },
   async act(a) {
     const msg = $('#syncMsg'); if (msg) msg.hidden = true;
     try {
-      if (a === 'cancel') { $('#dlgSync').close(); return; }
-      if (a === 'back') { this.step = 'email'; this.render(); return; }
-      if (a === 'pass') { this.step = 'pass'; this.vaultRow = this.vaultRow || null; this.render(); return; }
-      if (a === 'send' || a === 'resend') {
-        const email = a === 'send' ? $('#syncEmail').value.trim().toLowerCase() : this.email;
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { this.fail(new Error('Adresse e-mail invalide.')); return; }
-        if (a === 'resend' && Date.now() < this.resendAt) { this.fail(new Error(`Patientez ${Math.ceil((this.resendAt - Date.now()) / 1000)} secondes avant de redemander un code.`)); return; }
-        this.busy(true);
-        await cloud.requestCode(email);
-        this.email = email; this.resendAt = Date.now() + 60000;
-        this.step = 'code'; this.render();
-        if (a === 'resend') toast('Nouveau code envoyé.');
-        return;
-      }
-      if (a === 'verify') {
-        const code = $('#syncCode').value.replace(/\D/g, '');
-        if (code.length < 6) { this.fail(new Error('Le code contient 6 chiffres.')); return; }
-        this.busy(true);
-        this.vaultRow = await cloud.verifyCode(this.email, code);
-        this.step = 'pass'; this.render();
-        return;
-      }
-      if (a === 'unlock') {
-        const p = $('#syncPass').value;
-        if (!p) { this.fail(new Error('Saisissez la phrase secrète.')); return; }
-        this.busy(true);
-        await cloud.unlock(p, this.vaultRow);
-        this.step = 'done'; this.render();
-        return;
-      }
+      if (a === 'cancel') { this.close(); return; }
+      if (a === 'scan') { this.step = 'scan'; this.render(); return; }
+      if (a === 'enter') { this.step = 'enter'; this.render(); return; }
+      if (a === 'copy') { copyText(syncCode.format(cloud.st.code)).then((ok) => toast(ok ? 'Code copié.' : 'Copie impossible.')); return; }
       if (a === 'create') {
-        const p = $('#syncPass').value, p2 = $('#syncPass2').value;
-        if (p.length < 12) { this.fail(new Error('La phrase secrète doit faire au moins 12 caractères.')); return; }
-        if (p !== p2) { this.fail(new Error('Les deux saisies ne correspondent pas.')); return; }
-        if (!$('#syncNoted').checked) { this.fail(new Error('Cochez la case pour confirmer que vous avez noté la phrase secrète.')); return; }
         this.busy(true);
-        await cloud.unlock(p, null);
-        this.step = 'done'; this.render();
+        await cloud.create();
+        this.step = 'show'; this.render();
         return;
       }
-      if (a === 'forgot') { this.step = 'forgot'; this.render(); return; }
-      if (a === 'reset') {
+      if (a === 'join-typed') {
+        const raw = $('#syncCodeInput').value;
+        const c = syncCode.normalize(raw);
+        if (c.length !== 20) { this.fail(new Error(`Le code contient 20 caractères (${c.length} saisis).`)); return; }
+        if (!syncCode.valid(c)) { this.fail(new Error('Ce code contient une faute de frappe : vérifiez-le caractère par caractère.')); return; }
+        this.pending = c;
+        await this.act('join-pending');
+        return;
+      }
+      if (a === 'join-pending' || a === 'ios-anyway') {
+        if (!this.pending) return;
         this.busy(true);
-        await cloud.resetCloud();
-        this.vaultRow = null; this.step = 'pass'; this.render();
-        toast('Copie du serveur effacée. Choisissez une nouvelle phrase secrète.');
+        await cloud.join(this.pending);
+        this.pending = null;
+        this.step = 'show'; this.render();
+        toast('Appareil connecté : vos tâches sont synchronisées.', { duration: 6000 });
+        return;
+      }
+      if (a === 'change-go') {
+        this.busy(true);
+        await cloud.changeCode();
+        this.step = 'show'; this.render();
+        toast('Nouveau code créé. Les autres appareils doivent scanner ce nouveau QR code.', { duration: 9000 });
         return;
       }
       if (a === 'push') { await cloud.enablePush(); this.render(); return; }
-    } catch (e) { this.fail(e); }
+    } catch (e) {
+      if (e.badCode && this.step === 'confirm') { this.step = 'enter'; this.render(); }
+      this.fail(e);
+    }
+  },
+  /* Lien de jumelage (#lien=…) : QR code scanné avec l'appareil photo du téléphone. */
+  handleLink(hash = INITIAL_HASH) {
+    if (!cloud.enabled || !/lien=/.test(hash || '')) return;
+    if (this.lastLink === hash && Date.now() - this.lastLinkAt < 5000) return; // même lien reçu deux fois au lancement
+    this.lastLink = hash; this.lastLinkAt = Date.now();
+    const c = syncCode.fromText(hash);
+    try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+    if (!c) { toast('Ce lien de synchronisation est incomplet : scannez à nouveau le QR code.'); return; }
+    this.pending = c;
+    if (cloud.isOn() && cloud.st.code === c) { toast('Cet appareil est déjà connecté à cette liste.'); return; }
+    if (cloud.needsIosInstall()) { this.open('ios'); return; }
+    this.open('confirm');
   },
 };
 function pushBlockHTML() {
@@ -3646,23 +3729,15 @@ function pushBlockHTML() {
   if (cloud.needsIosInstall()) {
     return '<div class="hintBox"><strong>Notifications sur iPhone</strong><p>Installez d\'abord l\'application : bouton <strong>Partager</strong> de Safari, puis <strong>« Sur l\'écran d\'accueil »</strong>. Ouvrez-la ensuite depuis son icône pour activer les notifications.</p></div>';
   }
-  if (cloud.pushActive()) return '';
-  if (!cloud.pushSupported()) return '';
+  if (cloud.pushActive() || !cloud.pushSupported()) return '';
   return `<div class="hintBox"><strong>Recevoir les rappels sur cet appareil</strong><p>Même application fermée : le serveur envoie la notification à l'heure prévue, sans connaître son contenu.</p><div class="btnRow"><button type="button" class="btn primary" data-sync="push">${icon('bell')}Activer les notifications</button></div></div>`;
 }
-function addDeviceHTML() {
-  const url = location.origin + location.pathname.replace(/index\.html$/, '');
-  return `<div class="hintBox device"><div class="qr" id="syncQr" aria-hidden="true"></div><div><strong>Ajouter un autre appareil</strong>
-    <ol class="steps2"><li>Sur l'autre appareil (téléphone ou ordinateur), ouvrez <a href="${esc(url)}" target="_blank" rel="noopener">${esc(url.replace(/^https:\/\//, ''))}</a> (ou scannez ce code avec l'appareil photo).</li>
-    <li>Installez l'application : sur Android, menu ⋮ puis « Installer » ; sur iPhone, Partager puis « Sur l'écran d'accueil ».</li>
-    <li>Dans l'application installée : Réglages, « Synchroniser mes appareils », même adresse e-mail et même phrase secrète.</li></ol></div></div>`;
-}
-function renderQr() {
+function renderQr(code) {
   const box = $('#syncQr');
-  if (!box || typeof qrcode !== 'function') return;
+  if (!box || typeof qrcode !== 'function' || !code) return;
   try {
     const q = qrcode(0, 'M');
-    q.addData(location.origin + location.pathname.replace(/index\.html$/, ''));
+    q.addData(pairUrl(code));
     q.make();
     box.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
   } catch (e) { box.hidden = true; }
@@ -3673,64 +3748,73 @@ function renderSyncSettings() {
   sec.hidden = !cloud.enabled;
   if (!cloud.enabled) return;
   const txt = $('#setSyncText'), btns = $('#setSyncBtns');
-  const email = (cloud.st.session && cloud.st.session.email) || cloud.st.email || '';
+  if (cloud.isDead()) {
+    txt.innerHTML = 'Le code de synchronisation a été changé sur un autre appareil. Scannez le nouveau QR code pour reprendre ; vos tâches restent sur cet appareil et seront fusionnées.';
+    btns.innerHTML = `<button type="button" class="btn primary" data-syncset="scan">${icon('camera')}Scanner le nouveau QR code</button><button type="button" class="btn" data-syncset="signout">Arrêter la synchronisation ici</button>`;
+    return;
+  }
   if (!cloud.isOn()) {
-    txt.innerHTML = 'Retrouvez la même liste sur votre ordinateur et votre téléphone, avec les rappels en notification sur le téléphone. Chiffré de bout en bout : le serveur ne peut pas lire vos tâches.';
+    txt.innerHTML = 'Retrouvez la même liste sur votre ordinateur et votre téléphone, avec les rappels en notification. Les appareils se connectent en scannant un QR code : pas d\'e-mail, pas de mot de passe. Chiffré de bout en bout.';
     btns.innerHTML = `<button type="button" class="btn primary" data-syncset="open">${icon('sync')}Synchroniser mes appareils</button>`;
     return;
   }
-  if (!cloud.key) {
-    txt.innerHTML = `Compte <strong>${esc(email)}</strong>. Saisissez votre phrase secrète pour reprendre la synchronisation sur cet appareil.`;
-    btns.innerHTML = `<button type="button" class="btn primary" data-syncset="unlock">Saisir la phrase secrète</button><button type="button" class="btn" data-syncset="signout">Se déconnecter</button>`;
-    return;
-  }
   const s = cloud.statusLine();
-  txt.innerHTML = `Compte <strong>${esc(email)}</strong>. ${esc(s.text)}. ${cloud.pushActive() ? 'Notifications activées sur cet appareil.' : ''}`;
-  btns.innerHTML = `<button type="button" class="btn" data-syncset="now">${icon('sync')}Synchroniser maintenant</button>
-    ${cloud.pushActive() ? `<button type="button" class="btn" data-syncset="pushoff">${icon('bell')}Couper les notifications ici</button>` : `<button type="button" class="btn primary" data-syncset="push">${icon('bell')}Activer les notifications ici</button>`}
-    <button type="button" class="btn" data-syncset="device">${icon('link')}Ajouter un appareil</button>
+  txt.innerHTML = `${esc(s.text)}. ${cloud.pushActive() ? 'Notifications activées sur cet appareil.' : ''}`;
+  btns.innerHTML = `<button type="button" class="btn primary" data-syncset="show">${icon('qr')}Afficher le QR code</button>
+    <button type="button" class="btn" data-syncset="now">${icon('sync')}Synchroniser maintenant</button>
+    ${cloud.pushActive() ? `<button type="button" class="btn" data-syncset="pushoff">${icon('bell')}Couper les notifications ici</button>` : `<button type="button" class="btn" data-syncset="push">${icon('bell')}Activer les notifications ici</button>`}
+    <button type="button" class="btn" data-syncset="change">Changer de code</button>
     <button type="button" class="btn dangerBtn" data-syncset="signout">Déconnecter cet appareil</button>`;
 }
 function bindSync() {
   if (!cloud.enabled) return;
-  $('#dlgSync').addEventListener('click', (e) => {
+  const dlg = $('#dlgSync');
+  dlg.addEventListener('click', (e) => {
     const b = e.target.closest('[data-sync]');
     if (b) syncUi.act(b.dataset.sync);
-    else if (e.target === $('#dlgSync')) $('#dlgSync').close();
+    else if (e.target === dlg) syncUi.close();
   });
-  $('#dlgSync').addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || e.target.type === 'checkbox') return;
+  dlg.addEventListener('close', () => scanner.stop());
+  dlg.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
     e.preventDefault();
-    const primary = $('#syncFoot .btn.primary') || $('#syncFoot .btn.dangerBtn');
+    const primary = $('#syncFoot .btn.primary');
     if (primary && !primary.disabled) primary.click();
   });
-  $('#dlgSync').addEventListener('input', (e) => {
-    if (e.target.id !== 'syncPass' || !$('#syncStrength')) return;
-    const p = e.target.value, words = p.trim().split(/\s+/).filter(Boolean).length;
-    $('#syncStrength').textContent = p.length < 12 ? `Encore ${12 - p.length} caractère${12 - p.length > 1 ? 's' : ''} au minimum.`
-      : (words >= 4 || p.length >= 20) ? 'Très bien.' : 'Correct. Une phrase de quatre mots serait encore plus solide.';
+  dlg.addEventListener('input', (e) => {
+    if (e.target.id !== 'syncCodeInput') return;
+    const el = e.target, c = syncCode.normalize(el.value).slice(0, 20);
+    const f = c ? syncCode.format(c) : '';
+    if (f !== el.value) { el.value = f; el.setSelectionRange(f.length, f.length); }
   });
   $('#setSyncBtns').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-syncset]');
     if (!b) return;
     const a = b.dataset.syncset;
-    if (a === 'open') { $('#dlgSettings').close(); syncUi.open('email'); }
-    else if (a === 'unlock') { $('#dlgSettings').close(); syncUi.vaultRow = null; syncUi.open('pass'); }
+    if (a === 'open') { $('#dlgSettings').close(); syncUi.open('start'); }
+    else if (a === 'show') { $('#dlgSettings').close(); syncUi.open('show'); }
+    else if (a === 'scan') { $('#dlgSettings').close(); syncUi.open('scan'); }
+    else if (a === 'change') { $('#dlgSettings').close(); syncUi.open('change'); }
     else if (a === 'now') { await cloud.sync(); toast(cloud.status === 'ready' ? 'Synchronisé.' : cloud.statusLine().text); }
     else if (a === 'push') { await cloud.enablePush(); renderSyncSettings(); }
     else if (a === 'pushoff') { await cloud.unsubscribePush(); renderSyncSettings(); toast('Notifications coupées sur cet appareil.'); }
-    else if (a === 'device') { $('#dlgSettings').close(); syncUi.open('done'); }
     else if (a === 'signout') {
-      const c = await confirmDialog({ title: 'Déconnecter cet appareil ?', text: 'Les tâches restent sur cet appareil, mais ne seront plus synchronisées ni notifiées. Vos autres appareils ne sont pas touchés.', buttons: [{ id: 'cancel', label: 'Annuler' }, { id: 'ok', label: 'Déconnecter', primary: true, danger: true }] });
-      if (c === 'ok') { await cloud.signOut(); toast('Appareil déconnecté de la synchronisation.'); }
+      const c = await confirmDialog({ title: 'Déconnecter cet appareil ?', text: 'Les tâches restent sur cet appareil, mais ne seront plus synchronisées ni notifiées. Vos autres appareils ne sont pas touchés. Pour le reconnecter, il suffira de rescanner le QR code.', buttons: [{ id: 'cancel', label: 'Annuler' }, { id: 'ok', label: 'Déconnecter', primary: true, danger: true }] });
+      if (c === 'ok') { await cloud.disconnect(); toast('Appareil déconnecté de la synchronisation.'); }
       refreshSettings();
     }
   });
-  // Session partagée entre fenêtres : une déconnexion ou un renouvellement dans une autre fenêtre s'applique ici
-  window.addEventListener('storage', (e) => {
+  // État partagé entre fenêtres : connexion, déconnexion ou nouveau code dans une autre fenêtre
+  window.addEventListener('storage', async (e) => {
     if (e.key !== KEY_CLOUD) return;
-    cloud.reloadSession();
-    if (!cloud.st.session && cloud.status !== 'off') { cloud.key = null; cloud.status = 'off'; renderStatus(); refreshSettings(); }
+    let fresh = null;
+    try { fresh = JSON.parse(e.newValue || 'null'); } catch (err) { fresh = null; }
+    const was = cloud.st && cloud.st.code;
+    if (!fresh || !fresh.code) { if (was) { cloud.st = cloud.blank(); cloud.key = null; cloud.access = null; cloud.status = 'off'; renderStatus(); refreshSettings(); } return; }
+    cloud.st = { ...cloud.blank(), ...fresh };
+    if (fresh.code !== was) { await cloud.applyCode(); cloud.status = fresh.dead ? 'unpaired' : 'ready'; cloud.bind(); }
+    else if (fresh.dead) cloud.status = 'unpaired';
+    renderStatus(); refreshSettings();
   });
   // Ouvrir la tâche d'une notification (clic sur la notification, application déjà ouverte)
   if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', (e) => {
@@ -3801,7 +3885,8 @@ function boot() {
   $('#syncCard').addEventListener('click', (e) => {
     const b = e.target.closest('[data-synccard]');
     if (!b) return;
-    if (b.dataset.synccard === 'go') syncUi.open('email');
+    if (b.dataset.synccard === 'scan') syncUi.open('scan');
+    else if (b.dataset.synccard === 'code') syncUi.open('enter');
     else { lsSet('odj.synccard.later', String(Date.now())); renderSetupCard(); }
   });
   $('#setupCard').addEventListener('click', (e) => {
@@ -3820,8 +3905,7 @@ function boot() {
     else if (a === 'reconnect') fileSync.reconnect();
     else if (a === 'retry') fileSync.writeNow();
     else if (a === 'export') exportJson();
-    else if (a === 'sync-unlock') syncUi.open('pass');
-    else if (a === 'sync-login') syncUi.open('email');
+    else if (a === 'sync-scan') syncUi.open('scan');
     else if (a === 'sync-now') cloud.sync();
   });
 
@@ -3889,7 +3973,20 @@ function boot() {
   reminders.init();
   pwa.init();
   bindSync();
-  cloud.init();
+  cloud.init().then(() => syncUi.handleLink()).catch((e) => console.warn('Synchronisation', e));
+  // Lien ouvert alors que l'application est déjà ouverte : changement d'ancre, ou relance de l'application installée
+  window.addEventListener('hashchange', () => syncUi.handleLink(location.hash));
+  if ('launchQueue' in window && window.launchQueue && typeof window.launchQueue.setConsumer === 'function') {
+    window.launchQueue.setConsumer((params) => {
+      if (!params || !params.targetURL) return;
+      let u; try { u = new URL(params.targetURL); } catch (e) { return; }
+      if (u.hash) syncUi.handleLink(u.hash);
+      const q = u.searchParams;
+      if (q.has('nouvelle')) setTimeout(() => els.qa.focus(), 50);
+      if (q.get('vue') === 'aujourdhui') setView('today');
+      if (q.get('tache')) openTaskFromNotification(q.get('tache'));
+    });
+  }
   // Une fenêtre modale rend la page inerte : on masque les cartes de rappel le temps qu'elle est ouverte.
   for (const d of $$('dialog')) {
     const open = d.showModal.bind(d);
@@ -3903,7 +4000,7 @@ function boot() {
   if (!ui.storageOk) renderStatus();
 
   // Point d'accès pour les tests automatisés et le débogage
-  window.__odj = { cloud, select, setSetting, pwa, reminders, buildIcs, remindMs, state: () => state, ui, nextOccurrence, holidays, parseQuick, workdaysOfMonth, fileSync, idb, serialize, normData, VERSION };
+  window.__odj = { cloud, syncUi, syncCode, scanner, select, setSetting, pwa, reminders, buildIcs, remindMs, state: () => state, ui, nextOccurrence, holidays, parseQuick, workdaysOfMonth, fileSync, idb, serialize, normData, VERSION };
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

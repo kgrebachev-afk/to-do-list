@@ -3,7 +3,7 @@
 //   dist/web/              version installable (GitHub Pages) : même page + manifeste, service worker, icônes
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 // Serveur de synchronisation (adresse et clé publique du projet Supabase ; vides = synchronisation désactivée)
 let CLOUD = { url: '', anonKey: '' };
 try { CLOUD = { ...CLOUD, ...JSON.parse(readFileSync(new URL('./cloud.config.json', import.meta.url), 'utf8')) }; } catch (e) { /* pas de configuration */ }
@@ -51,6 +51,7 @@ writeFileSync(out('web/index.html'), webHtml);
 const build = createHash('sha256').update(webHtml).digest('hex').slice(0, 10);
 writeFileSync(out('web/sw.js'), readFileSync(src('web/sw.js'), 'utf8').split('{{VERSION}}').join(VERSION).split('{{BUILD}}').join(build));
 copyFileSync(src('web/manifest.webmanifest'), out('web/manifest.webmanifest'));
+copyFileSync(src('vendor/jsqr.min.js'), out('web/jsqr.js')); // lecteur de QR code, chargé à la demande
 for (const f of readdirSync(src('web/icons'))) copyFileSync(src(`web/icons/${f}`), out(`web/icons/${f}`));
 writeFileSync(out('web/.nojekyll'), '');
 writeFileSync(out('web/404.html'), '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=./"><title>To do list</title>');

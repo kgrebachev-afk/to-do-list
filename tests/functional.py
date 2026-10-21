@@ -1,8 +1,9 @@
+import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS
 import json, pathlib, re, time
 from playwright.sync_api import sync_playwright, expect
-ROOT = pathlib.Path('/home/claude/ordre-du-jour')
+ROOT = ROOT
 URL = (ROOT/'dist/to-do-list.html').as_uri()
-OUT = pathlib.Path('/tmp/claude-0/-home-claude/59fdc690-8e41-50a4-81b9-8a7023412a59/scratchpad/shots')
+OUT = SHOTS
 results=[]; errors=[]
 def check(name, cond, info=''):
     results.append((name, bool(cond), info)); print(('PASS ' if cond else 'FAIL ')+name+(' — '+str(info) if (info and not cond) else ''))

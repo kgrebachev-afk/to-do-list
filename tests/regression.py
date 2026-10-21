@@ -1,7 +1,8 @@
 # Régressions issues de la relecture indépendante
+import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS
 import pathlib, subprocess, sys, time, json
 from playwright.sync_api import sync_playwright
-ROOT = pathlib.Path('/home/claude/ordre-du-jour'); URL = (ROOT/'dist/to-do-list.html').as_uri()
+ROOT = ROOT; URL = (ROOT/'dist/to-do-list.html').as_uri()
 res=[]; errs=[]
 def check(n,c,i=''): res.append(c); print(('PASS ' if c else 'FAIL ')+n+('' if c else f' — {i}'))
 titles = lambda pg: pg.evaluate("window.__odj.state().tasks.filter(t=>!t.done).sort((a,b)=>a.position-b.position).map(t=>t.title)")

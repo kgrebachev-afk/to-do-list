@@ -1,8 +1,18 @@
 -- =====================================================================
 -- To do list : synchronisation chiffrée de bout en bout + rappels push
+-- Version 2 : appareils jumelés par QR code, sans e-mail ni mot de passe.
+--
+-- Chaque liste synchronisée a un « code de synchronisation » (affiché en QR code
+-- dans l'application). L'appareil en dérive deux secrets distincts :
+--   - une clé de chiffrement, qui ne quitte jamais l'appareil ;
+--   - une clé d'accès (p_key), envoyée au serveur, dont le serveur ne garde que
+--     l'empreinte SHA-256 : c'est l'identifiant du compte.
+-- Le serveur ne stocke que du contenu chiffré : ni les tâches, ni les notes, ni le
+-- texte des rappels ne lui sont lisibles. Les tables ne sont accessibles qu'à travers
+-- les fonctions ci-dessous, qui vérifient la clé d'accès à chaque appel.
+--
 -- À coller tel quel dans Supabase : SQL Editor > New query > Run.
--- Le serveur ne stocke que du contenu chiffré sur l'appareil : il ne peut
--- lire ni les tâches, ni les notes, ni le texte des rappels.
+-- Réexécutable : les objets de la version 1 (connexion par e-mail) sont remplacés.
 -- =====================================================================
 
 create schema if not exists private;
@@ -14,159 +24,219 @@ create table if not exists private.secrets (
   value text not null
 );
 
--- Une ligne par utilisateur : de quoi vérifier la phrase secrète (sans la connaître).
-create table if not exists public.vault (
-  user_id    uuid primary key default auth.uid() references auth.users(id) on delete cascade,
-  salt       text not null,
-  verifier   text not null,
-  iterations integer not null default 310000,
-  created_at timestamptz not null default now()
+-- ---------------------------------------------------------------------
+-- Nettoyage de la version 1 (connexion par e-mail). Les données de la v1 sont
+-- effacées : elles étaient rattachées à des comptes e-mail qui n'existent plus.
+-- ---------------------------------------------------------------------
+drop function if exists public.push_items(jsonb);
+drop function if exists public.push_items(jsonb, text);
+drop function if exists public.set_reminders(jsonb);
+drop function if exists public.set_reminders(jsonb, text);
+drop function if exists public.check_vault(text);
+drop function if exists public.register_push(text, text, text, text);
+drop function if exists public.unregister_push(text);
+drop function if exists public.reset_cloud();
+drop function if exists public.subs_for(uuid[]);
+drop function if exists public.claim_due_reminders();
+drop table if exists public.vault;
+do $$ begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'items' and column_name = 'user_id') then
+    drop table public.items; drop table if exists public.reminders; drop table if exists public.push_subs;
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- Tables
+-- ---------------------------------------------------------------------
+-- Un compte = une liste synchronisée. id : empreinte SHA-256 (hexadécimal) de la clé d'accès.
+create table if not exists public.accounts (
+  id         text primary key check (id ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz not null default now(),
+  last_seen  timestamptz not null default now()
 );
 
 -- Les tâches (et les réglages), chiffrées. updated_at : horloge de l'appareil, pour la fusion.
 -- modified_at : horloge du serveur, pour ne télécharger que ce qui a changé.
 create table if not exists public.items (
-  user_id     uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  account     text not null references public.accounts(id) on delete cascade,
   id          text not null check (length(id) between 1 and 80),
   updated_at  bigint not null,
   deleted     boolean not null default false,
   data        text check (data is null or length(data) < 300000),
   modified_at timestamptz not null default clock_timestamp(),
-  primary key (user_id, id)
+  primary key (account, id)
 );
-create index if not exists items_user_modified on public.items (user_id, modified_at);
+create index if not exists items_account_modified on public.items (account, modified_at, id);
 
 -- Abonnements aux notifications (un par appareil).
 create table if not exists public.push_subs (
   endpoint   text primary key,
-  user_id    uuid not null references auth.users(id) on delete cascade,
+  account    text not null references public.accounts(id) on delete cascade,
   p256dh     text not null,
   auth       text not null,
   label      text,
   created_at timestamptz not null default now(),
   last_ok    timestamptz
 );
-create index if not exists push_subs_user on public.push_subs (user_id);
+create index if not exists push_subs_account on public.push_subs (account);
 
--- Prochains rappels à envoyer. payload : titre du rappel, chiffré.
+-- Prochains rappels à envoyer. payload : titre et texte du rappel, chiffrés.
 create table if not exists public.reminders (
-  user_id  uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  account  text not null references public.accounts(id) on delete cascade,
   task_id  text not null,
   fire_at  timestamptz not null,
   payload  text not null check (length(payload) < 3000),
   sent_at  timestamptz,
-  primary key (user_id, task_id)
+  primary key (account, task_id)
 );
 create index if not exists reminders_due on public.reminders (fire_at) where sent_at is null;
 
--- ---------------------------------------------------------------------
--- Sécurité : chacun ne voit que ses propres lignes.
--- ---------------------------------------------------------------------
-alter table public.vault     enable row level security;
+-- Aucun accès direct : tout passe par les fonctions (security definer) qui vérifient la clé.
+alter table public.accounts  enable row level security;
 alter table public.items     enable row level security;
 alter table public.push_subs enable row level security;
 alter table public.reminders enable row level security;
+revoke all on public.accounts, public.items, public.push_subs, public.reminders from public, anon, authenticated;
 
-drop policy if exists own_vault on public.vault;
-create policy own_vault on public.vault for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
-drop policy if exists own_items on public.items;
-create policy own_items on public.items for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
-drop policy if exists own_reminders on public.reminders;
-create policy own_reminders on public.reminders for select to authenticated using (user_id = auth.uid());
-drop policy if exists own_push on public.push_subs;
-create policy own_push on public.push_subs for select to authenticated using (user_id = auth.uid());
+-- ---------------------------------------------------------------------
+-- Clé d'accès → compte
+-- ---------------------------------------------------------------------
+create or replace function private.key_hash(p_key text)
+returns text language plpgsql immutable set search_path = pg_catalog as $$
+begin
+  if p_key is null or p_key !~ '^[0-9a-f]{64}$' then raise exception 'clé invalide' using errcode = 'P0001'; end if;
+  return encode(sha256(convert_to(p_key, 'UTF8')), 'hex');
+end $$;
 
-revoke all on public.vault, public.items, public.push_subs, public.reminders from anon;
-grant select, insert, update, delete on public.vault, public.items to authenticated;
-grant select on public.reminders, public.push_subs to authenticated;
+-- Compte correspondant à la clé, ou erreur « compte inconnu » (code supprimé ou changé).
+create or replace function private.account_of(p_key text)
+returns text language plpgsql set search_path = public, pg_catalog as $$
+declare a text := private.key_hash(p_key);
+begin
+  update public.accounts set last_seen = now() where id = a and last_seen < now() - interval '1 hour';
+  if not exists (select 1 from public.accounts where id = a) then
+    raise exception 'compte inconnu' using errcode = 'P0001';
+  end if;
+  return a;
+end $$;
 
 -- ---------------------------------------------------------------------
 -- Fonctions appelées par l'application
 -- ---------------------------------------------------------------------
 
--- Vérifie que l'appareil chiffre avec le coffre actuel (sinon ses données seraient illisibles pour les autres).
-create or replace function public.check_vault(p_salt text)
-returns void language plpgsql security invoker set search_path = public as $$
+-- Création d'une liste synchronisée (premier appareil). Sans effet si elle existe déjà.
+create or replace function public.create_account(p_key text)
+returns void language plpgsql security definer set search_path = public, pg_catalog as $$
+declare a text := private.key_hash(p_key);
 begin
-  if p_salt is not null and not exists (select 1 from public.vault where user_id = auth.uid() and salt = p_salt) then
-    raise exception 'coffre changé' using errcode = 'P0001';
+  if exists (select 1 from public.accounts where id = a) then return; end if;
+  -- garde-fou contre les créations en masse
+  if (select count(*) from public.accounts where created_at > now() - interval '1 hour') >= 200 then
+    raise exception 'trop de créations, réessayez plus tard' using errcode = 'P0001';
   end if;
+  insert into public.accounts (id) values (a) on conflict (id) do nothing;
 end $$;
 
--- Envoi de tâches : la version la plus récente (selon l'appareil) l'emporte. Renvoie les identifiants
--- refusés parce que le serveur a déjà plus récent : l'appareil les relit et fusionne.
-drop function if exists public.push_items(jsonb);
-create or replace function public.push_items(rows jsonb, p_salt text default null)
-returns jsonb language plpgsql security invoker set search_path = public as $$
-declare rej jsonb;
+-- Lecture des éléments modifiés après (p_since, p_after_id), par pages de 500, dans l'ordre du serveur.
+create or replace function public.pull_items(p_key text, p_since timestamptz default null, p_after_id text default '')
+returns table (id text, updated_at bigint, deleted boolean, data text, modified_at timestamptz)
+language plpgsql security definer set search_path = public, pg_catalog as $$
+declare a text := private.account_of(p_key);
 begin
-  if auth.uid() is null then raise exception 'non connecté'; end if;
-  perform public.check_vault(p_salt);
-  if jsonb_array_length(rows) > 500 then raise exception 'trop d''éléments à la fois'; end if;
-  if (select count(*) from public.items where user_id = auth.uid()) > 50000 then raise exception 'limite de stockage atteinte'; end if;
-  insert into public.items (user_id, id, updated_at, deleted, data, modified_at)
-  select auth.uid(), r->>'id', (r->>'updated_at')::bigint, coalesce((r->>'deleted')::boolean, false), r->>'data', clock_timestamp()
-  from jsonb_array_elements(rows) r
-  on conflict (user_id, id) do update
+  return query
+    select i.id, i.updated_at, i.deleted, i.data, i.modified_at from public.items i
+     where i.account = a
+       and (p_since is null or (i.modified_at, i.id) > (p_since, coalesce(p_after_id, '')))
+     order by i.modified_at, i.id
+     limit 500;
+end $$;
+
+-- Lecture de quelques éléments précis (versions plus récentes que celles de l'appareil).
+create or replace function public.get_items(p_key text, p_ids text[])
+returns table (id text, updated_at bigint, deleted boolean, data text, modified_at timestamptz)
+language plpgsql security definer set search_path = public, pg_catalog as $$
+declare a text := private.account_of(p_key);
+begin
+  if coalesce(array_length(p_ids, 1), 0) > 500 then raise exception 'trop d''éléments à la fois'; end if;
+  return query
+    select i.id, i.updated_at, i.deleted, i.data, i.modified_at from public.items i
+     where i.account = a and i.id = any(p_ids);
+end $$;
+
+-- Envoi : la version la plus récente (selon l'appareil) l'emporte. Renvoie les identifiants
+-- refusés parce que le serveur a déjà plus récent : l'appareil les relit et fusionne.
+create or replace function public.push_items(p_key text, p_rows jsonb)
+returns jsonb language plpgsql security definer set search_path = public, pg_catalog as $$
+declare a text := private.account_of(p_key); rej jsonb;
+begin
+  if jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) > 500 then raise exception 'trop d''éléments à la fois'; end if;
+  if (select count(*) from public.items where account = a) > 50000 then raise exception 'limite de stockage atteinte'; end if;
+  insert into public.items (account, id, updated_at, deleted, data, modified_at)
+  select a, r->>'id', (r->>'updated_at')::bigint, coalesce((r->>'deleted')::boolean, false), r->>'data', clock_timestamp()
+  from jsonb_array_elements(p_rows) r
+  on conflict (account, id) do update
     set updated_at = excluded.updated_at, deleted = excluded.deleted, data = excluded.data, modified_at = clock_timestamp()
     where public.items.updated_at < excluded.updated_at;
   select coalesce(jsonb_agg(i.id), '[]'::jsonb) into rej
-    from jsonb_array_elements(rows) r
-    join public.items i on i.user_id = auth.uid() and i.id = r->>'id'
+    from jsonb_array_elements(p_rows) r
+    join public.items i on i.account = a and i.id = r->>'id'
    where i.updated_at > (r->>'updated_at')::bigint
       or (i.updated_at = (r->>'updated_at')::bigint and i.data is distinct from r->>'data');
   return jsonb_build_object('rejected', rej);
 end $$;
 
 -- Remplace la liste des rappels à venir (calculée sur l'appareil).
-drop function if exists public.set_reminders(jsonb);
-create or replace function public.set_reminders(rows jsonb, p_salt text default null)
-returns void language plpgsql security definer set search_path = public as $$
+create or replace function public.set_reminders(p_key text, p_rows jsonb)
+returns void language plpgsql security definer set search_path = public, pg_catalog as $$
+declare a text := private.account_of(p_key);
 begin
-  if auth.uid() is null then raise exception 'non connecté'; end if;
-  if p_salt is not null and not exists (select 1 from public.vault where user_id = auth.uid() and salt = p_salt) then
-    raise exception 'coffre changé' using errcode = 'P0001';
-  end if;
-  if jsonb_array_length(rows) > 500 then raise exception 'trop de rappels'; end if;
-  if exists (select 1 from jsonb_array_elements(rows) r where length(r->>'payload') >= 3000 or length(r->>'task_id') > 80) then
+  if jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) > 500 then raise exception 'trop de rappels'; end if;
+  if exists (select 1 from jsonb_array_elements(p_rows) r where length(r->>'payload') >= 3000 or length(r->>'task_id') > 80) then
     raise exception 'rappel trop volumineux';
   end if;
   delete from public.reminders
-   where user_id = auth.uid()
-     and task_id not in (select r->>'task_id' from jsonb_array_elements(rows) r);
-  insert into public.reminders (user_id, task_id, fire_at, payload, sent_at)
-  select auth.uid(), r->>'task_id', to_timestamp((r->>'fire_at')::double precision / 1000), r->>'payload', null
-  from jsonb_array_elements(rows) r
-  on conflict (user_id, task_id) do update
+   where account = a
+     and task_id not in (select r->>'task_id' from jsonb_array_elements(p_rows) r);
+  insert into public.reminders (account, task_id, fire_at, payload, sent_at)
+  select a, r->>'task_id', to_timestamp((r->>'fire_at')::double precision / 1000), r->>'payload', null
+  from jsonb_array_elements(p_rows) r
+  on conflict (account, task_id) do update
     set payload = excluded.payload,
         sent_at = case when public.reminders.fire_at = excluded.fire_at then public.reminders.sent_at else null end,
         fire_at = excluded.fire_at;
 end $$;
--- les rappels ne s'écrivent que par set_reminders (limites contrôlées)
-revoke insert, update, delete on public.reminders from authenticated;
-drop policy if exists own_reminders_write on public.reminders;
 
--- Abonnement de l'appareil aux notifications.
-create or replace function public.register_push(p_endpoint text, p_p256dh text, p_auth text, p_label text)
-returns void language plpgsql security definer set search_path = public as $$
+-- Abonnement de l'appareil aux notifications (services de notification connus seulement).
+create or replace function public.register_push(p_key text, p_endpoint text, p_p256dh text, p_auth text, p_label text)
+returns void language plpgsql security definer set search_path = public, pg_catalog as $$
+declare a text := private.account_of(p_key);
 begin
-  if auth.uid() is null then raise exception 'non connecté'; end if;
   if length(p_endpoint) > 1000 or p_endpoint !~ '^https://(fcm\.googleapis\.com|android\.googleapis\.com|([a-z0-9-]+\.)*push\.apple\.com|([a-z0-9-]+\.)*notify\.windows\.com|([a-z0-9-]+\.)*push\.services\.mozilla\.com)/' then
     raise exception 'service de notification inconnu';
   end if;
   if length(p_p256dh) > 200 or length(p_auth) > 100 then raise exception 'abonnement invalide'; end if;
-  insert into public.push_subs (endpoint, user_id, p256dh, auth, label)
-  values (p_endpoint, auth.uid(), p_p256dh, p_auth, left(p_label, 80))
-  on conflict (endpoint) do update set user_id = auth.uid(), p256dh = excluded.p256dh, auth = excluded.auth, label = excluded.label, created_at = now();
+  insert into public.push_subs (endpoint, account, p256dh, auth, label)
+  values (p_endpoint, a, p_p256dh, p_auth, left(p_label, 80))
+  on conflict (endpoint) do update set account = a, p256dh = excluded.p256dh, auth = excluded.auth, label = excluded.label, created_at = now();
   -- 10 appareils au plus : les plus anciens sont retirés
   delete from public.push_subs where endpoint in (
-    select endpoint from public.push_subs where user_id = auth.uid() order by created_at desc offset 10);
+    select endpoint from public.push_subs where account = a order by created_at desc offset 10);
 end $$;
 
-create or replace function public.unregister_push(p_endpoint text)
-returns void language sql security definer set search_path = public as $$
-  delete from public.push_subs where endpoint = p_endpoint and user_id = auth.uid();
-$$;
+create or replace function public.unregister_push(p_key text, p_endpoint text)
+returns void language plpgsql security definer set search_path = public, pg_catalog as $$
+declare a text := private.account_of(p_key);
+begin
+  delete from public.push_subs where endpoint = p_endpoint and account = a;
+end $$;
+
+-- Supprime la liste du serveur (changement de code, ou arrêt de la synchronisation).
+-- Les appareils qui utilisaient ce code sont aussitôt déconnectés ; leurs tâches restent chez eux.
+create or replace function public.delete_account(p_key text)
+returns void language plpgsql security definer set search_path = public, pg_catalog as $$
+begin
+  delete from public.accounts where id = private.key_hash(p_key);
+end $$;
 
 -- Clé publique d'envoi des notifications (créée automatiquement par la fonction d'envoi).
 create or replace function public.vapid_public_key()
@@ -174,21 +244,13 @@ returns text language sql security definer set search_path = public, private sta
   select (value::jsonb)->>'publicKey' from private.secrets where name = 'vapid';
 $$;
 
--- Phrase secrète oubliée : tout effacer côté serveur (les copies sur les appareils restent).
-create or replace function public.reset_cloud()
-returns void language plpgsql security definer set search_path = public as $$
-begin
-  if auth.uid() is null then raise exception 'non connecté'; end if;
-  delete from public.items where user_id = auth.uid();
-  delete from public.reminders where user_id = auth.uid();
-  delete from public.push_subs where user_id = auth.uid();
-  delete from public.vault where user_id = auth.uid();
-end $$;
-
-revoke execute on function public.push_items(jsonb, text), public.set_reminders(jsonb, text), public.check_vault(text), public.register_push(text, text, text, text),
-  public.unregister_push(text), public.vapid_public_key(), public.reset_cloud() from public, anon;
-grant execute on function public.push_items(jsonb, text), public.set_reminders(jsonb, text), public.check_vault(text), public.register_push(text, text, text, text),
-  public.unregister_push(text), public.vapid_public_key(), public.reset_cloud() to authenticated;
+revoke execute on all functions in schema private from public, anon, authenticated;
+revoke execute on function public.create_account(text), public.pull_items(text, timestamptz, text), public.get_items(text, text[]),
+  public.push_items(text, jsonb), public.set_reminders(text, jsonb), public.register_push(text, text, text, text, text),
+  public.unregister_push(text, text), public.delete_account(text), public.vapid_public_key() from public;
+grant execute on function public.create_account(text), public.pull_items(text, timestamptz, text), public.get_items(text, text[]),
+  public.push_items(text, jsonb), public.set_reminders(text, jsonb), public.register_push(text, text, text, text, text),
+  public.unregister_push(text, text), public.delete_account(text), public.vapid_public_key() to anon, authenticated;
 
 -- ---------------------------------------------------------------------
 -- Fonctions réservées à la fonction d'envoi (clé de service)
@@ -205,19 +267,21 @@ begin
 end $$;
 
 -- Réserve les rappels arrivés à échéance (un seul envoi même si deux exécutions se chevauchent).
+-- user_id : identifiant du compte (nom conservé pour la fonction d'envoi).
 create or replace function public.claim_due_reminders()
-returns table (user_id uuid, task_id text, payload text, fire_at timestamptz, fresh boolean)
+returns table (user_id text, task_id text, payload text, fire_at timestamptz, fresh boolean)
 language sql security definer set search_path = public as $$
   update public.reminders r set sent_at = now()
-   where (r.user_id, r.task_id) in (
-     select q.user_id, q.task_id from public.reminders q
+   where (r.account, r.task_id) in (
+     select q.account, q.task_id from public.reminders q
       where q.sent_at is null and q.fire_at <= now()
       order by q.fire_at limit 300 for update skip locked)
-  returning r.user_id, r.task_id, r.payload, r.fire_at, (r.fire_at > now() - interval '12 hours') as fresh;
+  returning r.account, r.task_id, r.payload, r.fire_at, (r.fire_at > now() - interval '12 hours') as fresh;
 $$;
-create or replace function public.subs_for(p_users uuid[])
-returns setof public.push_subs language sql security definer set search_path = public stable as $$
-  select * from public.push_subs where user_id = any(p_users);
+create or replace function public.subs_for(p_users text[])
+returns table (endpoint text, user_id text, p256dh text, auth text)
+language sql security definer set search_path = public stable as $$
+  select s.endpoint, s.account, s.p256dh, s.auth from public.push_subs s where s.account = any(p_users);
 $$;
 create or replace function public.drop_sub(p_endpoint text)
 returns void language sql security definer set search_path = public as $$
@@ -229,6 +293,8 @@ returns void language sql security definer set search_path = public as $$
 $$;
 
 revoke execute on function public.todo_secret(text), public.todo_init_secret(text, text), public.claim_due_reminders(),
-  public.subs_for(uuid[]), public.drop_sub(text), public.mark_sub_ok(text) from public, anon, authenticated;
+  public.subs_for(text[]), public.drop_sub(text), public.mark_sub_ok(text) from public, anon, authenticated;
 grant execute on function public.todo_secret(text), public.todo_init_secret(text, text), public.claim_due_reminders(),
-  public.subs_for(uuid[]), public.drop_sub(text), public.mark_sub_ok(text) to service_role;
+  public.subs_for(text[]), public.drop_sub(text), public.mark_sub_ok(text) to service_role;
+
+-- Les listes abandonnées (aucun appareil depuis un an) sont effacées par le ménage quotidien (cron.sql).

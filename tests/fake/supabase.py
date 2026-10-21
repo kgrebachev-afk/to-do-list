@@ -1,29 +1,42 @@
-# Faux serveur Supabase (auth par code e-mail, PostgREST, RPC) pour les tests de synchronisation.
-import json, re, threading, time, uuid, urllib.parse
+# Faux serveur Supabase (fonctions de la base, schéma v2 : comptes par clé d'accès) pour les tests.
+# Reproduit le comportement de supabase/schema.sql, vérifié par tests/server/sql.test.mjs.
+import json, re, threading, time, hashlib, urllib.parse
+from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+class Unknown(Exception): pass
 
 class State:
     def __init__(self):
         self.lock = threading.Lock()
-        self.codes = {}      # email -> code
-        self.users = {}      # email -> id
-        self.tokens = {}     # access token -> user id
-        self.refresh = {}    # refresh token -> user id
-        self.vault = {}      # uid -> row
-        self.items = {}      # (uid, id) -> row
-        self.reminders = {}  # (uid, task_id) -> row
+        self.accounts = {}   # empreinte -> {created}
+        self.items = {}      # (compte, id) -> row
+        self.reminders = {}  # (compte, task_id) -> row
         self.subs = {}       # endpoint -> row
         self.calls = []
-        self.expires_in = 3600
         self.down = False
         self.clock = 0
     def now_iso(self):
-        # horloge du serveur strictement croissante
+        # horloge du serveur strictement croissante, au format renvoyé par PostgREST
         self.clock = max(self.clock + 1, int(time.time() * 1e6))
         t = self.clock
         return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(t // 1_000_000)) + '.%06d+00:00' % (t % 1_000_000)
 
 S = State()
+
+def ts(s):
+    return datetime.fromisoformat(s.replace('Z', '+00:00')).astimezone(timezone.utc)
+
+def key_hash(k):
+    if not isinstance(k, str) or not re.fullmatch(r'[0-9a-f]{64}', k): raise ValueError('clé invalide')
+    return hashlib.sha256(k.encode()).hexdigest()
+
+def account_of(k):
+    a = key_hash(k)
+    if a not in S.accounts: raise Unknown()
+    return a
+
+PUSH_OK = re.compile(r'^https://(fcm\.googleapis\.com|android\.googleapis\.com|([a-z0-9-]+\.)*push\.apple\.com|([a-z0-9-]+\.)*notify\.windows\.com|([a-z0-9-]+\.)*push\.services\.mozilla\.com)/')
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -40,103 +53,89 @@ class H(BaseHTTPRequestHandler):
     def body(self):
         n = int(self.headers.get('Content-Length') or 0)
         return json.loads(self.rfile.read(n) or b'null') if n else None
-    def uid(self):
-        a = self.headers.get('Authorization', '')
-        return S.tokens.get(a[7:]) if a.startswith('Bearer ') else None
-    def issue(self, uid, email):
-        at, rt = 'at-' + uuid.uuid4().hex, 'rt-' + uuid.uuid4().hex
-        S.tokens[at] = uid; S.refresh[rt] = uid
-        return {'access_token': at, 'refresh_token': rt, 'expires_in': S.expires_in, 'token_type': 'bearer', 'user': {'id': uid, 'email': email}}
 
     def do_GET(self):
         if S.down: self.close_connection = True; return
-        u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
+        u = urllib.parse.urlparse(self.path)
         if u.path == '/__state':
-            with S.lock: return self.reply(200, {'items': [dict(r, user_id=k[0]) for k, r in S.items.items()], 'vault': S.vault, 'reminders': [dict(r, user_id=k[0]) for k, r in S.reminders.items()], 'subs': list(S.subs.values()), 'calls': S.calls[-200:], 'codes': S.codes})
-        if u.path == '/auth/v1/health': return self.reply(200, {'name': 'GoTrue'})
-        uid = self.uid()
-        S.calls.append(['GET', u.path])
-        if not uid: return self.reply(401, {'message': 'JWT expired'})
-        with S.lock:
-            if u.path == '/rest/v1/vault':
-                v = S.vault.get(uid); return self.reply(200, [v] if v else [])
-            if u.path == '/rest/v1/items':
-                mine = [r for (k, r) in S.items.items() if k[0] == uid]
-                if 'id' in q:  # id=in.("a","b")
-                    ids = set(x.strip('"') for x in re.match(r'in\.\((.*)\)', q['id'][0]).group(1).split(','))
-                    return self.reply(200, [r for r in mine if r['id'] in ids])
-                if 'or' in q:  # (modified_at.gt."X",and(modified_at.eq."X",id.gt."Y"))
-                    m = re.match(r'\(modified_at\.gt\."([^"]+)",and\(modified_at\.eq\."([^"]+)",id\.gt\."([^"]+)"\)\)', q['or'][0])
-                    x, y = m.group(1), m.group(3)
-                    rows = [r for r in mine if r['modified_at'] > x or (r['modified_at'] == x and r['id'] > y)]
-                else:
-                    since = (q.get('modified_at') or ['gte.1970'])[0].split('.', 1)[1]
-                    rows = [r for r in mine if r['modified_at'] >= since]
-                rows.sort(key=lambda r: (r['modified_at'], r['id']))
-                lim = int((q.get('limit') or ['500'])[0])
-                return self.reply(200, rows[:lim])
+            with S.lock:
+                return self.reply(200, {'accounts': list(S.accounts), 'items': [dict(r, account=k[0]) for k, r in S.items.items()],
+                                        'reminders': [dict(r, account=k[0]) for k, r in S.reminders.items()], 'subs': list(S.subs.values()), 'calls': S.calls[-300:]})
         return self.reply(404, {'message': 'inconnu'})
 
     def do_POST(self):
         if S.down: self.close_connection = True; return
         u = urllib.parse.urlparse(self.path); b = self.body() or {}
-        S.calls.append(['POST', u.path])
-        with S.lock:
-            if u.path == '/auth/v1/otp':
-                S.codes[b['email']] = '482913'
-                return self.reply(200, {})
-            if u.path == '/auth/v1/verify':
-                if S.codes.get(b.get('email')) != b.get('token'): return self.reply(403, {'error_code': 'otp_expired', 'msg': 'Token has expired or is invalid'})
-                uid = S.users.setdefault(b['email'], str(uuid.uuid4()))
-                return self.reply(200, self.issue(uid, b['email']))
-            if u.path == '/auth/v1/token':
-                uid = S.refresh.pop(b.get('refresh_token'), None)
-                if not uid: return self.reply(400, {'error': 'invalid_grant', 'error_description': 'Invalid Refresh Token'})
-                email = next(e for e, i in S.users.items() if i == uid)
-                return self.reply(200, self.issue(uid, email))
-            uid = self.uid()
-            if u.path == '/auth/v1/logout': return self.reply(204)
-            if not uid: return self.reply(401, {'message': 'JWT expired'})
-            if u.path == '/rest/v1/vault':
-                if uid in S.vault: return self.reply(409, {'code': '23505', 'message': 'duplicate key'})
-                S.vault[uid] = {'salt': b['salt'], 'verifier': b['verifier'], 'iterations': b.get('iterations', 310000)}
-                return self.reply(201)
-            m = re.match(r'/rest/v1/rpc/(\w+)', u.path)
-            if not m: return self.reply(404, {})
-            fn = m.group(1)
-            if fn in ('push_items', 'set_reminders') and b.get('p_salt') is not None and (S.vault.get(uid) or {}).get('salt') != b['p_salt']:
-                return self.reply(400, {'code': 'P0001', 'message': 'coffre changé'})
-            if fn == 'push_items':
-                rejected = []
-                for r in b['rows']:
-                    k = (uid, r['id']); cur = S.items.get(k)
-                    if cur is None or cur['updated_at'] < r['updated_at']:
-                        S.items[k] = {'id': r['id'], 'updated_at': r['updated_at'], 'deleted': bool(r.get('deleted')), 'data': r.get('data'), 'modified_at': S.now_iso()}
-                    elif cur['updated_at'] > r['updated_at'] or cur['data'] != r.get('data'):
-                        rejected.append(r['id'])
-                return self.reply(200, {'rejected': rejected})
-            if fn == 'set_reminders':
-                keep = {r['task_id'] for r in b['rows']}
-                for k in [k for k in S.reminders if k[0] == uid and k[1] not in keep]: del S.reminders[k]
-                for r in b['rows']:
-                    k = (uid, r['task_id']); cur = S.reminders.get(k)
-                    sent = cur['sent_at'] if cur and cur['fire_at'] == r['fire_at'] else None
-                    S.reminders[k] = {'task_id': r['task_id'], 'fire_at': r['fire_at'], 'payload': r['payload'], 'sent_at': sent}
-                return self.reply(200, None) if False else self.reply(204)
-            if fn == 'register_push':
-                S.subs[b['p_endpoint']] = {'endpoint': b['p_endpoint'], 'user_id': uid, 'p256dh': b['p_p256dh'], 'auth': b['p_auth'], 'label': b['p_label']}
-                return self.reply(204)
-            if fn == 'unregister_push':
-                S.subs.pop(b['p_endpoint'], None); return self.reply(204)
-            if fn == 'vapid_public_key':
-                return self.reply(200, 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U')
-            if fn == 'reset_cloud':
-                for d in (S.items, S.reminders):
-                    for k in [k for k in d if k[0] == uid]: del d[k]
-                S.vault.pop(uid, None)
-                for e in [e for e, s in S.subs.items() if s['user_id'] == uid]: del S.subs[e]
-                return self.reply(204)
-        return self.reply(404, {})
+        S.calls.append(['POST', u.path, sorted(b.keys())])
+        k = self.headers.get('apikey')
+        if k not in ('anon-test', 'sb_publishable_test'): return self.reply(401, {'message': 'No API key found in request'})
+        auth = self.headers.get('Authorization')
+        # comme Supabase : une clé « sb_publishable_… » envoyée en Authorization est refusée (ce n'est pas un JWT)
+        if auth and (k.startswith('sb_') or auth != 'Bearer ' + k): return self.reply(401, {'message': 'Invalid JWT'})
+        m = re.match(r'/rest/v1/rpc/(\w+)$', u.path)
+        if not m: return self.reply(404, {'message': 'inconnu'})
+        fn = m.group(1)
+        try:
+            with S.lock: return self.rpc(fn, b)
+        except Unknown:
+            return self.reply(400, {'code': 'P0001', 'message': 'compte inconnu'})
+        except ValueError as e:
+            return self.reply(400, {'code': 'P0001', 'message': str(e)})
+
+    def rpc(self, fn, b):
+        if fn == 'create_account':
+            S.accounts.setdefault(key_hash(b['p_key']), {'created': time.time()}); return self.reply(204)
+        if fn == 'vapid_public_key':
+            return self.reply(200, 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U')
+        if fn == 'delete_account':
+            a = key_hash(b['p_key'])
+            S.accounts.pop(a, None)
+            for d in (S.items, S.reminders):
+                for k in [k for k in d if k[0] == a]: del d[k]
+            for e in [e for e, s in S.subs.items() if s['account'] == a]: del S.subs[e]
+            return self.reply(204)
+        a = account_of(b.get('p_key'))
+        if fn == 'pull_items':
+            mine = [r for (k, r) in S.items.items() if k[0] == a]
+            since = b.get('p_since'); after = b.get('p_after_id') or ''
+            if since:
+                t = ts(since)
+                mine = [r for r in mine if (ts(r['modified_at']), r['id']) > (t, after)]
+            mine.sort(key=lambda r: (ts(r['modified_at']), r['id']))
+            return self.reply(200, mine[:500])
+        if fn == 'get_items':
+            ids = set(b['p_ids'])
+            return self.reply(200, [r for (k, r) in S.items.items() if k[0] == a and r['id'] in ids])
+        if fn == 'push_items':
+            rows = b['p_rows']
+            if len(rows) > 500: raise ValueError('trop d\'éléments à la fois')
+            rejected = []
+            for r in rows:
+                k = (a, r['id']); cur = S.items.get(k)
+                if cur is None or cur['updated_at'] < r['updated_at']:
+                    S.items[k] = {'id': r['id'], 'updated_at': r['updated_at'], 'deleted': bool(r.get('deleted')), 'data': r.get('data'), 'modified_at': S.now_iso()}
+                elif cur['updated_at'] > r['updated_at'] or cur['data'] != r.get('data'):
+                    rejected.append(r['id'])
+            return self.reply(200, {'rejected': rejected})
+        if fn == 'set_reminders':
+            rows = b['p_rows']
+            if any(len(r['payload']) >= 3000 for r in rows): raise ValueError('rappel trop volumineux')
+            keep = {r['task_id'] for r in rows}
+            for k in [k for k in S.reminders if k[0] == a and k[1] not in keep]: del S.reminders[k]
+            for r in rows:
+                k = (a, r['task_id']); cur = S.reminders.get(k)
+                sent = cur['sent_at'] if cur and cur['fire_at'] == r['fire_at'] else None
+                S.reminders[k] = {'task_id': r['task_id'], 'fire_at': r['fire_at'], 'payload': r['payload'], 'sent_at': sent}
+            return self.reply(204)
+        if fn == 'register_push':
+            if not PUSH_OK.match(b['p_endpoint']): raise ValueError('service de notification inconnu')
+            S.subs[b['p_endpoint']] = {'endpoint': b['p_endpoint'], 'account': a, 'p256dh': b['p_p256dh'], 'auth': b['p_auth'], 'label': b['p_label']}
+            return self.reply(204)
+        if fn == 'unregister_push':
+            s = S.subs.get(b['p_endpoint'])
+            if s and s['account'] == a: del S.subs[b['p_endpoint']]
+            return self.reply(204)
+        return self.reply(404, {'message': 'fonction inconnue'})
 
 def start(port):
     srv = ThreadingHTTPServer(('127.0.0.1', port), H)
