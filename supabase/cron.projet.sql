@@ -23,10 +23,14 @@ select cron.schedule('todo-send-reminders', '* * * * *', $job$
   );
 $job$);
 
--- Ménage : historique du cron gardé 2 jours.
+-- Ménage quotidien : historique du cron (2 jours), rappels envoyés, listes abandonnées depuis plus d'un an,
+-- QR codes expirés, traces anti-abus.
 select cron.unschedule('todo-cron-cleanup') where exists (select 1 from cron.job where jobname = 'todo-cron-cleanup');
 select cron.schedule('todo-cron-cleanup', '17 3 * * *', $job$
   delete from cron.job_run_details where end_time < now() - interval '2 days';
   delete from public.reminders where sent_at < now() - interval '30 days';
   delete from public.accounts where last_seen < now() - interval '400 days';
+  delete from public.pairings where expires_at < now() - interval '1 hour';
+  delete from private.creations where at < now() - interval '1 day';
+  delete from public.retired_accounts where retired_at < now() - interval '400 days';
 $job$);

@@ -1,8 +1,8 @@
 # Matrice urgent / important
-import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS
+import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS, BUILD, test_build
 import pathlib
 from playwright.sync_api import sync_playwright
-ROOT=ROOT; URL=(ROOT/'dist/to-do-list.html').as_uri()
+ROOT=ROOT; URL=(BUILD/'to-do-list.html').as_uri()
 OUT=SHOTS
 res=[]; errs=[]
 def check(n,c,i=''): res.append(bool(c)); print(('PASS ' if c else 'FAIL ')+n+('' if c else f' — {i}'))

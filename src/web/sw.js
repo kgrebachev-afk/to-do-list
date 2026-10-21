@@ -68,8 +68,11 @@ self.addEventListener('push', (event) => {
       const key = await readKey();
       if (key && data.c && data.t) {
         const p = await decrypt(key, data.c, `rem:${data.t}`);
-        title = p.title || title;
-        body = p.body || '';
+        // texte affiché seulement pour un rappel du moment (un ancien message rejoué reste générique)
+        if (typeof p.at === 'number' && Math.abs(Date.now() - p.at) < 24 * 3600000) {
+          title = String(p.title || title).slice(0, 200);
+          body = String(p.body || '').slice(0, 400);
+        }
       }
     } catch (e) { /* clé absente ou ancienne : notification générique */ }
     // Toujours afficher (exigé par les navigateurs). Même étiquette que les rappels affichés par

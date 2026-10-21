@@ -1,5 +1,5 @@
 # Version installable : manifeste, service worker, hors ligne, mise à jour, raccourcis, CSP
-import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS
+import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS, BUILD, test_build
 import pathlib, subprocess, sys, time, json, shutil, re
 from playwright.sync_api import sync_playwright
 ROOT=ROOT
@@ -9,7 +9,7 @@ res=[]; errs=[]; csp=[]
 def check(n,c,i=''): res.append(bool(c)); print(('PASS ' if c else 'FAIL ')+n+('' if c else f' — {i}'))
 # copie servie sous un sous-chemin, comme GitHub Pages (/to-do-list/)
 shutil.rmtree(SCR, ignore_errors=True); (SCR/'site').mkdir(parents=True)
-shutil.copytree(ROOT/'dist/web', SCR/'site/to-do-list')
+shutil.copytree(test_build('build-web', PAGES_URL='http://127.0.0.1:8780/to-do-list/')/'web', SCR/'site/to-do-list')
 srv=subprocess.Popen([sys.executable,'-m','http.server','8780','--bind','127.0.0.1','-d',str(SCR/'site')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); time.sleep(0.8)
 BASE='http://127.0.0.1:8780/to-do-list/'
 try:

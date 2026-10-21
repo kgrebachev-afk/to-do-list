@@ -11,7 +11,10 @@ l'ancienne version (connexion par e-mail) en conservant les clés de notificatio
 ## 2. Créer la fonction d'envoi des rappels
 **Edge Functions** → **Deploy a new function** → **Via Editor**.
 - Nom de la fonction : `send-reminders` (exactement).
-- Remplacer tout le code par le contenu de `functions/send-reminders/index.ts` → **Deploy function**.
+- Remplacer tout le code par le contenu de `functions/send-reminders/index.ts`, puis ajouter un second
+  fichier nommé exactement `web-push.js` avec le contenu de `functions/send-reminders/web-push.js`
+  (bibliothèque d'envoi incluse, versions figées : rien n'est téléchargé au déploiement) → **Deploy function**.
+  Avec la CLI : `supabase functions deploy send-reminders --no-verify-jwt`.
 - Dans les réglages de la fonction, désactiver **Verify JWT** → **Save**.
   La fonction se protège elle-même avec un jeton secret connu de la base seule.
 

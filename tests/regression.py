@@ -1,12 +1,12 @@
 # Régressions issues de la relecture indépendante
-import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS
+import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS, BUILD, test_build
 import pathlib, subprocess, sys, time, json
 from playwright.sync_api import sync_playwright
-ROOT = ROOT; URL = (ROOT/'dist/to-do-list.html').as_uri()
+ROOT = ROOT; URL = (BUILD/'to-do-list.html').as_uri()
 res=[]; errs=[]
 def check(n,c,i=''): res.append(c); print(('PASS ' if c else 'FAIL ')+n+('' if c else f' — {i}'))
 titles = lambda pg: pg.evaluate("window.__odj.state().tasks.filter(t=>!t.done).sort((a,b)=>a.position-b.position).map(t=>t.title)")
-srv = subprocess.Popen([sys.executable,'-m','http.server','8766','--bind','127.0.0.1','-d',str(ROOT/'dist')], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(0.8)
+srv = subprocess.Popen([sys.executable,'-m','http.server','8766','--bind','127.0.0.1','-d',str(BUILD)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(0.8)
 try:
   with sync_playwright() as p:
     b=p.chromium.launch(); ctx=b.new_context(locale='fr-FR', timezone_id='Europe/Paris', viewport={'width':1366,'height':820})

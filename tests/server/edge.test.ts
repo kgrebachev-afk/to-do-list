@@ -1,12 +1,15 @@
 // Test de la fonction d'envoi : faux PostgREST + faux service push HTTPS, déchiffrement du message reçu.
 import { createECDH, randomBytes } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import ece from 'npm:http_ece@1.2.0';
 const b64u = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 let fails = 0;
 const check = (n: string, c: boolean, i: unknown = '') => { if (!c) fails++; console.log((c ? 'PASS ' : 'FAIL ') + n + (c ? '' : ' — ' + JSON.stringify(i))); };
 
 // --- faux PostgREST
-const secrets: Record<string, string> = { cron: 'secret-cron' };
+const CRON = 'a'.repeat(32) + 'b'.repeat(32);
+const secrets: Record<string, string> = { cron: CRON };
+let restCalls = 0;
 const reminders = [
   { user_id: 'A', task_id: 't1', payload: 'CIPHERTEXT-1', fire_at: new Date(Date.now() - 30000).toISOString(), fresh: true },
   { user_id: 'A', task_id: 'old', payload: 'X', fire_at: new Date(Date.now() - 86400000).toISOString(), fresh: false },
@@ -17,10 +20,12 @@ const authSecret = randomBytes(16);
 const subs = [
   { endpoint: 'https://127.0.0.1:9443/ok', user_id: 'A', p256dh: b64u(ecdh.getPublicKey()), auth: b64u(authSecret) },
   { endpoint: 'https://127.0.0.1:9443/gone', user_id: 'A', p256dh: b64u(ecdh.getPublicKey()), auth: b64u(authSecret) },
+  { endpoint: 'https://127.0.0.1:9443/badkeys', user_id: 'A', p256dh: 'k', auth: 'a' },
 ];
-const dropped: string[] = [], okMarked: string[] = [];
+const dropped: string[] = [], okMarked: string[] = [], markedSent: string[] = [];
 const rest = Deno.serve({ port: 9001, onListen() {} }, async (req) => {
   const name = new URL(req.url).pathname.split('/').pop()!;
+  restCalls++;
   const ok = req.headers.get('authorization') === 'Bearer service-key' || (req.headers.get('apikey') === 'sb_secret_test' && !req.headers.get('authorization'));
   if (!ok) return new Response('no', { status: 401 });
   const a = await req.json().catch(() => ({}));
@@ -30,7 +35,8 @@ const rest = Deno.serve({ port: 9001, onListen() {} }, async (req) => {
   if (name === 'claim_due_reminders') { const r = claimed ? [] : reminders; claimed = true; return J(r); }
   if (name === 'subs_for') return J(subs.filter((s) => a.p_users.includes(s.user_id)));
   if (name === 'drop_sub') { dropped.push(a.p_endpoint); return new Response(''); }
-  if (name === 'mark_sub_ok') { okMarked.push(a.p_endpoint); return new Response(''); }
+  if (name === 'mark_subs_ok') { okMarked.push(...a.p_endpoints); return new Response(''); }
+  if (name === 'mark_sent') { markedSent.push(...a.p_tasks); return new Response(''); }
   return new Response('?', { status: 404 });
 });
 // --- faux service push (HTTPS)
@@ -48,10 +54,19 @@ Deno.env.set('TODO_NO_SERVE', '1');
 const { handler } = await import(new URL('../../supabase/functions/send-reminders/index.ts', import.meta.url).href);
 
 let r = await handler(new Request('http://x/', { method: 'POST', headers: { 'x-cron-secret': 'faux' } }));
-check('mauvais jeton cron : refusé', r.status === 401);
-r = await handler(new Request('http://x/', { method: 'POST', headers: { 'x-cron-secret': 'secret-cron' } }));
+check('jeton cron mal formé : refusé sans aucun accès à la base', r.status === 401 && restCalls === 0, restCalls);
+r = await handler(new Request('http://x/', { method: 'POST' }));
+check('sans jeton : refusé sans aucun accès à la base', r.status === 401 && restCalls === 0, restCalls);
+r = await handler(new Request('http://x/', { method: 'POST', headers: { 'x-cron-secret': 'c'.repeat(64) } }));
+check('mauvais jeton bien formé : refusé', r.status === 401);
+const before = restCalls;
+r = await handler(new Request('http://x/', { method: 'POST', headers: { 'x-cron-secret': 'd'.repeat(64) } }));
+check('jeton gardé en mémoire : pas de nouvelle lecture à chaque appel', r.status === 401 && restCalls === before, [before, restCalls]);
+r = await handler(new Request('http://x/', { method: 'POST', headers: { 'x-cron-secret': CRON } }));
 const out = await r.json();
-check('réponse : 1 envoyé, 1 abonnement expiré', out.sent === 1 && out.dropped === 1 && out.due === 2, out);
+check('réponse : 1 envoyé, 2 abonnements retirés (expiré, clés invalides)', out.sent === 1 && out.dropped === 2 && out.due === 2, out);
+check('clés invalides : abonnement retiré', dropped.includes('https://127.0.0.1:9443/badkeys'));
+check('rappels marqués traités (envoyé, et trop ancien abandonné)', markedSent.includes('t1') && markedSent.includes('old'), markedSent);
 check('clés VAPID créées et gardées', !!secrets.vapid && JSON.parse(secrets.vapid).publicKey.length > 40);
 const ok = received.find((x) => x.path === '/ok');
 check('notification reçue par le service push', !!ok);
@@ -62,7 +77,7 @@ check('message déchiffrable par l\'appareil, contenu transmis tel quel (chiffr�
 check('rappel trop ancien (> 12 h) non envoyé', !received.some((x) => { try { return JSON.parse(ece.decrypt(Buffer.from(x.body), { version: 'aes128gcm', privateKey: ecdh, authSecret }).toString()).t === 'old'; } catch { return false; } }));
 check('abonnement expiré supprimé', dropped.includes('https://127.0.0.1:9443/gone'));
 check('abonnement valide marqué', okMarked.includes('https://127.0.0.1:9443/ok'));
-r = await handler(new Request('http://x/', { method: 'POST', headers: { 'x-cron-secret': 'secret-cron' } }));
+r = await handler(new Request('http://x/', { method: 'POST', headers: { 'x-cron-secret': CRON } }));
 check('exécution suivante : rien à envoyer', (await r.json()).sent === 0);
 await rest.shutdown(); await push.shutdown();
 console.log(fails ? `${fails} ÉCHEC(S)` : 'tout est OK');

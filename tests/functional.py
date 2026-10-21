@@ -1,8 +1,8 @@
-import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS
+import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS, BUILD, test_build
 import json, pathlib, re, time
 from playwright.sync_api import sync_playwright, expect
 ROOT = ROOT
-URL = (ROOT/'dist/to-do-list.html').as_uri()
+URL = (BUILD/'to-do-list.html').as_uri()
 OUT = SHOTS
 results=[]; errors=[]
 def check(name, cond, info=''):
@@ -200,7 +200,7 @@ with sync_playwright() as p:
 
     # --- fichier de sauvegarde (OPFS sert de faux fichier OneDrive ; OPFS exige une origine http)
     import subprocess, sys
-    srv = subprocess.Popen([sys.executable, '-m', 'http.server', '8765', '--bind', '127.0.0.1', '-d', str(ROOT/'dist')], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    srv = subprocess.Popen([sys.executable, '-m', 'http.server', '8765', '--bind', '127.0.0.1', '-d', str(BUILD)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.8)
     main_pg = pg
     pg = ctx.new_page(); pg.goto('http://127.0.0.1:8765/to-do-list.html'); pg.wait_for_timeout(300)

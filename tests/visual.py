@@ -1,7 +1,7 @@
-import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS
+import sys as _sys, pathlib as _pl; _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent)); from paths import ROOT, TMP, SHOTS, BUILD, test_build
 import pathlib, json
 from playwright.sync_api import sync_playwright
-URL=((ROOT/'dist/to-do-list.html')).as_uri()
+URL=((BUILD/'to-do-list.html')).as_uri()
 OUT=SHOTS
 SEED = """() => {
  const day=86400000, now=Date.now(), T=(o)=>Object.assign({id:crypto.randomUUID(),notes:'',steps:[],done:false,doneAt:null,due:null,repeat:null,createdAt:now-5*day,updatedAt:now-5*day},o);

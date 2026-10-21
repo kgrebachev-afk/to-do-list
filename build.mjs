@@ -3,12 +3,18 @@
 //   dist/web/              version installable (GitHub Pages) : même page + manifeste, service worker, icônes
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 // Serveur de synchronisation (adresse et clé publique du projet Supabase ; vides = synchronisation désactivée)
 let CLOUD = { url: '', anonKey: '' };
 try { CLOUD = { ...CLOUD, ...JSON.parse(readFileSync(new URL('./cloud.config.json', import.meta.url), 'utf8')) }; } catch (e) { /* pas de configuration */ }
 if (process.env.CLOUD_URL) CLOUD = { url: process.env.CLOUD_URL, anonKey: process.env.CLOUD_KEY || '' };
 CLOUD.url = (CLOUD.url || '').replace(/\/+$/, '');
+// Adresse publique de la version web : la CSP n'autorise que SES fichiers (pas tout le domaine github.io,
+// partagé avec les autres sites du compte).
+const PAGES_URL = (process.env.PAGES_URL || 'https://kgrebachev-afk.github.io/to-do-list/').replace(/\/?$/, '/');
+const PAGES_PATH = new URL(PAGES_URL).pathname;
+// Point d'accès des tests (window.__odj) : uniquement dans les versions de test.
+const TEST_HOOKS = process.env.TEST_HOOKS === '1';
 const src = (p) => new URL(`./src/${p}`, import.meta.url);
 const OUT = process.env.OUT_DIR ? new URL(`file://${process.env.OUT_DIR.replace(/\/?$/, '/')}`) : new URL('./dist/', import.meta.url);
 const out = (p) => new URL(p, OUT);
@@ -23,13 +29,19 @@ const fonts = {
 let css = readFileSync(src('styles.css'), 'utf8');
 for (const [k, f] of Object.entries(fonts)) css = css.split(`{{${k}}}`).join(b64(f));
 const qr = readFileSync(src('vendor/qrcode.min.js'), 'utf8');
-const jsBase = readFileSync(src('app.js'), 'utf8').split('{{QR_JS}}').join(qr);
+const jsqr = readFileSync(src('vendor/jsqr.min.js'));
+const JSQR_SRI = `sha384-${createHash('sha384').update(jsqr).digest('base64')}`;
+let jsBase = readFileSync(src('app.js'), 'utf8').split('{{QR_JS}}').join(qr).split('{{JSQR_SRI}}').join(JSQR_SRI);
+if (!TEST_HOOKS) {
+  jsBase = jsBase.replace(/\/\*@test\*\/[\s\S]*?\/\*@endtest\*\//g, '');
+  if (jsBase.includes('__odj')) throw new Error('Point d\'accès de test resté dans la version publiée');
+}
 const template = readFileSync(src('index.html'), 'utf8');
 
 // Le script de la page est autorisé par son empreinte (aucun autre script en ligne ne peut s'exécuter).
 const CSP_FILE = "default-src 'none'; script-src {{SCRIPT_HASH}}; style-src 'unsafe-inline'; font-src data:; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
 // Version web : le service worker et le manifeste viennent du même site ; aucune connexion de la page n'est permise.
-const CSP_WEB = `default-src 'none'; script-src 'self' {{SCRIPT_HASH}}; worker-src 'self'; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src ${CLOUD.url || "'none'"}; form-action 'none'; base-uri 'none'`;
+const CSP_WEB = `default-src 'none'; script-src ${PAGES_URL}jsqr.js {{SCRIPT_HASH}}; worker-src ${PAGES_URL}sw.js; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src ${CLOUD.url || "'none'"}; form-action 'none'; base-uri 'none'`;
 const HEAD_WEB = `
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">`;
@@ -61,6 +73,9 @@ copyFileSync(src('web/manifest.webmanifest'), out('web/manifest.webmanifest'));
 copyFileSync(src('vendor/jsqr.min.js'), out('web/jsqr.js')); // lecteur de QR code, chargé à la demande
 for (const f of readdirSync(src('web/icons'))) copyFileSync(src(`web/icons/${f}`), out(`web/icons/${f}`));
 writeFileSync(out('web/.nojekyll'), '');
-writeFileSync(out('web/404.html'), '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=./"><title>To do list</title>');
+copyFileSync(new URL('./THIRD_PARTY_LICENSES.txt', import.meta.url), out('web/THIRD_PARTY_LICENSES.txt'));
+copyFileSync(src('fonts/OFL.txt'), out('web/OFL.txt'));
+writeFileSync(out('web/404.html'), `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=${PAGES_PATH}"><title>To do list</title>`);
 console.log(CLOUD.url ? `synchronisation : ${CLOUD.url}` : 'synchronisation : non configurée');
+console.log(`adresse : ${PAGES_URL}${TEST_HOOKS ? ' (version de test)' : ''}`);
 console.log('OK', `fichier ${(fileHtml.length / 1024).toFixed(0)} Ko, web ${(webHtml.length / 1024).toFixed(0)} Ko, build ${build}`);
