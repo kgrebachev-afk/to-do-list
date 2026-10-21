@@ -1,0 +1,23 @@
+{
+  "id": "./",
+  "name": "To do list",
+  "short_name": "To do list",
+  "description": "Liste de tâches personnelle : priorités, étapes, notes et rappels. Vos tâches restent sur votre ordinateur.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#EDEFF1",
+  "theme_color": "#0C6A74",
+  "launch_handler": { "client_mode": "focus-existing" },
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Nouvelle tâche", "short_name": "Nouvelle", "url": "./?nouvelle", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Aujourd'hui", "url": "./?vue=aujourdhui", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
+  ]
+}

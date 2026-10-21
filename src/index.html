@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="{{CSP}}">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0C6A74">{{HEAD_EXTRA}}
+<title>To do list</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230C6A74'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<!--
+  To do list — version Bureau {{VERSION}}
+  Fichier autonome : aucune connexion réseau, aucune installation.
+  Polices Barlow et Barlow Semi Condensed (Jeremy Tribby), SIL Open Font License 1.1.
+-->
+<style>
+{{CSS}}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <h1>To do list</h1>
+      <p id="todayLabel"></p>
+    </div>
+
+    <nav class="views" role="tablist" aria-label="Vues">
+      <button type="button" role="tab" data-view="todo" id="tab-todo">À faire <span class="count" id="count-todo"></span></button>
+      <button type="button" role="tab" data-view="today" id="tab-today">Aujourd'hui <span class="count" id="count-today"></span></button>
+      <button type="button" role="tab" data-view="done" id="tab-done">Terminées</button>
+    </nav>
+
+    <div class="tools">
+      <label class="search">
+        <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="search" type="search" placeholder="Rechercher" autocomplete="off" spellcheck="false" aria-label="Rechercher dans les tâches">
+        <kbd class="searchKbd" aria-hidden="true">Ctrl F</kbd>
+      </label>
+      <button type="button" class="iconBtn" id="btnShortcuts" title="Raccourcis clavier (?)" aria-label="Raccourcis clavier">
+        <svg class="ic" aria-hidden="true"><use href="#i-keyboard"/></svg>
+      </button>
+      <button type="button" class="iconBtn" id="btnSettings" title="Sauvegarde et réglages" aria-label="Sauvegarde et réglages">
+        <svg class="ic" aria-hidden="true"><use href="#i-sliders"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="body">
+    <section class="listPane" aria-label="Liste des tâches">
+      <form class="quickadd" id="quickadd" autocomplete="off">
+        <div class="qa">
+          <svg class="ic qaPlus" aria-hidden="true"><use href="#i-plus"/></svg>
+          <input id="qaInput" type="text" placeholder="Ajouter une tâche" aria-label="Ajouter une tâche" aria-describedby="qaHint" maxlength="500" spellcheck="true">
+          <kbd class="qaKbd" aria-hidden="true">Entrée</kbd>
+        </div>
+        <p class="qaHint" id="qaHint"></p>
+      </form>
+
+      <div class="setupCard installCard" id="installCard" hidden>
+        <div class="setupIc"><svg class="ic" aria-hidden="true"><use href="#i-install"/></svg></div>
+        <div class="setupBody">
+          <h2>Installer To do list sur cet ordinateur</h2>
+          <p>L'application s'ouvrira dans sa propre fenêtre, avec son icône dans la barre des tâches, et fonctionnera même sans réseau. Une fois installée, Chrome garde l'accès à votre fichier de sauvegarde : plus de sauvegarde en pause.</p>
+          <div class="btnRow">
+            <button type="button" class="btn primary" data-install="go">Installer</button>
+            <button type="button" class="linkBtn" data-install="later">Plus tard</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setupCard" id="setupCard" hidden>
+        <div class="setupIc"><svg class="ic" aria-hidden="true"><use href="#i-save"/></svg></div>
+        <div class="setupBody">
+          <h2>Activer la sauvegarde automatique</h2>
+          <p>Choisissez une seule fois où enregistrer vos tâches, de préférence dans votre dossier OneDrive. Ensuite, chaque modification y est enregistrée toute seule : rien à cliquer, ni à la fermeture, ni à l'ouverture.</p>
+          <div class="btnRow">
+            <button type="button" class="btn primary" data-setup="create">Choisir l'emplacement</button>
+            <button type="button" class="btn" data-setup="open">J'ai déjà un fichier</button>
+            <button type="button" class="linkBtn" data-setup="later">Plus tard</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="listScroll" id="listScroll">
+        <div id="list" class="list" role="list" tabindex="0" aria-label="Tâches"></div>
+      </div>
+
+      <footer class="status" id="status" aria-live="polite"></footer>
+    </section>
+
+    <aside class="detailPane" id="detail" aria-label="Détail de la tâche"></aside>
+  </main>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+  <div class="rcards" id="rcards" role="region" aria-label="Rappels" aria-live="polite"></div>
+</div>
+
+<!-- Réglages -->
+<dialog id="dlgSettings" aria-labelledby="dlgSettingsTitle">
+  <div class="dlgHead">
+    <h2 id="dlgSettingsTitle">Sauvegarde et réglages</h2>
+    <button type="button" class="iconBtn" data-close aria-label="Fermer"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="dlgBody">
+    <section class="setSec">
+      <h3>Fichier de sauvegarde</h3>
+      <p class="setText" id="setFileText"></p>
+      <div class="btnRow" id="setFileBtns"></div>
+    </section>
+
+    <section class="setSec">
+      <h3>Exporter et importer</h3>
+      <p class="setText">L'export JSON se réimporte ici ou dans une future version. L'export texte se lit dans n'importe quel éditeur.</p>
+      <div class="btnRow">
+        <button type="button" class="btn" id="btnExportJson"><svg class="ic" aria-hidden="true"><use href="#i-save"/></svg>Exporter en JSON</button>
+        <button type="button" class="btn" id="btnExportMd"><svg class="ic" aria-hidden="true"><use href="#i-note"/></svg>Exporter en texte</button>
+        <button type="button" class="btn" id="btnImport"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>Importer un fichier JSON</button>
+        <input type="file" id="importFile" accept=".json,application/json" hidden>
+      </div>
+    </section>
+
+    <section class="setSec">
+      <h3>Points de restauration</h3>
+      <p class="setText">Une copie de vos tâches est gardée chaque jour, sur les 7 derniers jours d'utilisation.</p>
+      <ul class="snaps" id="snapList"></ul>
+    </section>
+
+    <section class="setSec" id="setAppSec" hidden>
+      <h3>Application</h3>
+      <p class="setText" id="setAppText"></p>
+      <div class="btnRow" id="setAppBtns"></div>
+    </section>
+
+    <section class="setSec">
+      <h3>Rappels</h3>
+      <p class="setText" id="setRemText"></p>
+      <div class="btnRow" id="setRemBtns"></div>
+      <div class="prefGrid remGrid">
+        <label for="prefRemTime">Heure par défaut</label>
+        <input type="time" class="field" id="prefRemTime" step="300">
+        <span>Son</span>
+        <label class="inlineCheck"><input type="checkbox" id="prefRemSound"> Jouer un son au moment du rappel</label>
+        <span>Affichage</span>
+        <label class="inlineCheck"><input type="checkbox" id="prefRemSticky"> Garder la notification Windows à l'écran jusqu'à ce que je la ferme</label>
+      </div>
+      <details class="setMore">
+        <summary>Pourquoi un rappel peut arriver en retard</summary>
+        <p class="setText">Les rappels partent tant que la page est ouverte dans Chrome, même en arrière-plan ou fenêtre réduite. Si Chrome est fermé, ou si Chrome a désactivé l'onglet pour économiser la mémoire, le rappel s'affiche dès que vous revenez sur la page, avec son retard indiqué.</p>
+        <p class="setText">Le plus simple : <strong>épinglez l'onglet</strong> (clic droit sur l'onglet, puis Épingler). Chrome ne désactive jamais un onglet épinglé. Autre solution : dans Chrome, <strong>Paramètres, Performances</strong>, puis ajoutez cette page à <strong>Toujours garder ces sites actifs</strong>. Pour un rappel qui ne doit jamais être manqué, même Chrome fermé, utilisez <strong>Ajouter à Outlook</strong> dans le détail de la tâche.</p>
+        <div class="btnRow"><button type="button" class="btn" id="btnCopyUrl">Copier l'adresse de cette page</button></div>
+      </details>
+    </section>
+
+    <section class="setSec">
+      <h3>Préférences</h3>
+      <div class="prefGrid">
+        <label for="prefTheme">Apparence</label>
+        <select id="prefTheme">
+          <option value="auto">Comme Windows</option>
+          <option value="light">Claire</option>
+          <option value="dark">Sombre</option>
+        </select>
+
+        <label for="prefAddTo">Nouvelles tâches</label>
+        <select id="prefAddTo">
+          <option value="bottom">En bas de la liste</option>
+          <option value="top">En haut de la liste</option>
+        </select>
+
+        <span>Jours ouvrés</span>
+        <label class="inlineCheck"><input type="checkbox" id="prefHolidays"> Exclure les jours fériés français</label>
+      </div>
+    </section>
+
+    <p class="about">Version {{VERSION}}. Vos tâches restent sur cet ordinateur : l'application ne se connecte à aucun serveur.</p>
+  </div>
+</dialog>
+
+<!-- Raccourcis -->
+<dialog id="dlgShortcuts" aria-labelledby="dlgShortcutsTitle">
+  <div class="dlgHead">
+    <h2 id="dlgShortcutsTitle">Raccourcis clavier</h2>
+    <button type="button" class="iconBtn" data-close aria-label="Fermer"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="dlgBody keys">
+    <section>
+      <h3>Liste</h3>
+      <dl>
+        <dt><kbd>N</kbd></dt><dd>Ajouter une tâche</dd>
+        <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Passer d'une tâche à l'autre</dd>
+        <dt><kbd>Entrée</kbd></dt><dd>Modifier la tâche</dd>
+        <dt><kbd>Espace</kbd></dt><dd>Terminer ou rouvrir</dd>
+        <dt><kbd>Alt</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Monter ou descendre la tâche</dd>
+        <dt><kbd>Alt</kbd> <kbd>Maj</kbd> <kbd>↑</kbd></dt><dd>Mettre en tête de liste</dd>
+        <dt><kbd>Suppr</kbd></dt><dd>Supprimer</dd>
+        <dt><kbd>Ctrl</kbd> <kbd>Z</kbd></dt><dd>Annuler la dernière action</dd>
+        <dt><kbd>Ctrl</kbd> <kbd>Y</kbd></dt><dd>Rétablir</dd>
+      </dl>
+    </section>
+    <section>
+      <h3>Navigation</h3>
+      <dl>
+        <dt><kbd>Maj</kbd> <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>À faire, Aujourd'hui, Terminées</dd>
+        <dt><kbd>Ctrl</kbd> <kbd>F</kbd></dt><dd>Rechercher</dd>
+        <dt><kbd>Échap</kbd></dt><dd>Revenir à la liste</dd>
+        <dt><kbd>?</kbd></dt><dd>Afficher cette aide</dd>
+      </dl>
+      <h3>Saisie rapide</h3>
+      <dl>
+        <dt><kbd>Alt</kbd> <kbd>Entrée</kbd></dt><dd>Ajouter à l'autre bout de la liste</dd>
+        <dt><code>@demain</code></dt><dd>Échéance demain</dd>
+        <dt><code>@ven</code></dt><dd>Vendredi prochain (lun, mar, mer…)</dd>
+        <dt><code>@25/10</code></dt><dd>Une date précise</dd>
+        <dt><code>@14h30</code></dt><dd>Un rappel à cette heure (le jour de l'échéance, sinon aujourd'hui)</dd>
+      </dl>
+      <h3>Étapes</h3>
+      <dl>
+        <dt><kbd>Entrée</kbd></dt><dd>Nouvelle étape en dessous</dd>
+        <dt><kbd>Alt</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Déplacer l'étape</dd>
+        <dt>Coller</dt><dd>Plusieurs lignes deviennent plusieurs étapes</dd>
+      </dl>
+    </section>
+  </div>
+</dialog>
+
+<!-- Confirmation générique -->
+<dialog id="dlgConfirm" aria-labelledby="dlgConfirmTitle">
+  <div class="dlgHead"><h2 id="dlgConfirmTitle"></h2></div>
+  <div class="dlgBody"><p class="setText" id="dlgConfirmText"></p></div>
+  <div class="dlgFoot" id="dlgConfirmBtns"></div>
+</dialog>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M7.5 14h9"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9.5M18.5 7H20M4 17h1.5M10.5 17H20"/><circle cx="16" cy="7" r="2.3"/><circle cx="8" cy="17" r="2.3"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+    <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M16.5 3l3 3-3 3"/><path d="M4.5 11.5V10a4 4 0 0 1 4-4h11"/><path d="M7.5 21l-3-3 3-3"/><path d="M19.5 12.5V14a4 4 0 0 1-4 4h-11"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 3.5h8.5L19 8v12.5H6z"/><path d="M14 3.5V8h5M9 12.5h7M9 16h5"/></symbol>
+    <symbol id="i-steps" viewBox="0 0 24 24"><path d="M3.5 6.5l1.6 1.6L8.3 5M3.5 13.5l1.6 1.6 3.2-3.1M11.5 6.5H20M11.5 13.5H20M11.5 19.5H20"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5"/></symbol>
+    <symbol id="i-top" viewBox="0 0 24 24"><path d="M5 4.5h14M12 20V9.5M7 14l5-5 5 5"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="12" height="12" rx="2"/><path d="M15.5 8.5v-3a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+    <symbol id="i-ok" viewBox="0 0 24 24"><path d="M4.5 12.5l4.5 4.5L19.5 6.5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 15.5H3z"/><path d="M12 10v4.5M12 17.5h.01"/></symbol>
+    <symbol id="i-install" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8.5 20.5h7M12 7.5v6M9 11l3 3 3-3"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3.5h10l4 4v13H5z"/><path d="M8.5 3.5V8h6V3.5M8 20.5v-6h8v6"/></symbol>
+    <symbol id="i-grip" viewBox="0 0 24 24"><g fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></g></symbol>
+  </defs>
+</svg>
+
+<script>
+{{JS}}
+</script>
+</body>
+</html>
