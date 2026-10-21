@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="To do list">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; worker-src 'self'; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; worker-src 'self'; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src https://mkihhdkjwnjklcnbdpvg.supabase.co; form-action 'none'; base-uri 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0C6A74">
 <link rel="manifest" href="manifest.webmanifest">
@@ -4112,8 +4112,8 @@ var qrcode=function(){var P=function(x,w){var g=236,l=17,n=x,s=O[w],t=null,r=0,h
    Synchronisation entre appareils, chiffrée de bout en bout
    Le serveur (Supabase) ne reçoit que du contenu chiffré sur l'appareil.
    ===================================================================== */
-const CLOUD_URL = '';
-const CLOUD_KEY = '';
+const CLOUD_URL = 'https://mkihhdkjwnjklcnbdpvg.supabase.co';
+const CLOUD_KEY = 'sb_publishable_O4625_w6ORXQoLo96MbdLQ_QxH8fogu';
 const KEY_CLOUD = 'odj.cloud.v1';
 const SETTINGS_ITEM = '__settings';
 const SYNCED_SETTINGS = ['addTo', 'holidays', 'urgentDays', 'remindTime'];
