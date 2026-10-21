@@ -664,3 +664,27 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
   .qbody { overflow: visible; }
   .app.matrixMode .detailPane { width: 100vw; border-left: 0; }
 }
+
+/* ---------- Largeurs intermédiaires : jamais de défilement horizontal ---------- */
+.topbar { min-width: 0; }
+.views { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.views::-webkit-scrollbar { display: none; }
+.listPane, .detailPane { min-width: 0; }
+.status .linkBtn { white-space: nowrap; flex: none; }
+@media (min-width: 861px) {
+  .body { grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr); }
+  .app.matrixMode .body { grid-template-columns: minmax(0, 1fr); }
+}
+@media (min-width: 861px) and (max-width: 1180px) {
+  .topbar { gap: 18px; }
+  .views button { padding: 0 9px; }
+  .search { width: 190px; }
+}
+@media (min-width: 861px) and (max-width: 1060px) { .brand p { display: none; } .search { width: 160px; } .searchKbd { display: none; } }
+@media (max-width: 860px) {
+  .views { margin: 0 -16px; padding: 0 10px; width: calc(100% + 32px); }
+}
+@media (max-width: 420px) {
+  .views button { padding: 0 8px; font-size: 14.5px; gap: 5px; }
+  .tools { gap: 2px; }
+}

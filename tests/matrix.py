@@ -105,5 +105,41 @@ with sync_playwright() as p:
     pg.set_viewport_size({'width':1366,'height':820})
     # sombre
     pg.emulate_media(color_scheme='dark'); pg.wait_for_timeout(150); pg.screenshot(path=str(OUT/'73-matrix-dark.png'))
+
+    # --- relecture : régressions
+    pg.emulate_media(color_scheme='light')
+    pg.click('#tab-matrix'); pg.wait_for_timeout(100)
+    pg.locator('.mcard').nth(1).click(); pg.wait_for_timeout(300)
+    check('panneau ouvert : arrière-plan inerte', pg.evaluate("document.querySelector('.listPane').inert && document.querySelector('.topbar').inert"))
+    check('panneau ouvert : le focus est dans le panneau', pg.evaluate("document.querySelector('#detail').contains(document.activeElement)"))
+    pg.keyboard.press('Control+f'); pg.keyboard.type('a'); pg.wait_for_timeout(250)
+    check('recherche pendant le panneau : voile retiré, liste utilisable', pg.locator('#scrim').is_hidden() and not pg.evaluate("document.querySelector('.listPane').inert"))
+    pg.fill('#search',''); pg.press('#search','Escape'); pg.wait_for_timeout(150)
+    pg.locator('.mcard').first.focus(); pg.locator('.mcard').first.click(); pg.keyboard.press('Escape'); pg.wait_for_timeout(250)
+    sel = pg.evaluate("window.__odj.ui.selectedId")
+    pg.keyboard.press('i'); pg.wait_for_timeout(100)
+    check('après la touche I : le focus reste sur la tâche', pg.evaluate("document.activeElement.dataset && document.activeElement.dataset.id")==sel, pg.evaluate("document.activeElement.tagName"))
+    pg.keyboard.press('Control+z'); pg.wait_for_timeout(100)
+    # flèches : « À classer » d'abord
+    pg.keyboard.press('Home'); pg.wait_for_timeout(50)
+    first_inbox = pg.locator('[data-drop="inbox"] .mcard').first.get_attribute('data-id') if pg.locator('[data-drop="inbox"] .mcard').count() else pg.locator('[data-drop="q1"] .mcard').first.get_attribute('data-id')
+    check('Début : première tâche affichée (À classer)', pg.evaluate("window.__odj.ui.selectedId")==first_inbox)
+    # « À classer » dans le panneau remet l'urgence en automatique
+    pg.locator('.mcard', has_text='Répondre aux achats').click(); pg.wait_for_timeout(250)
+    pg.locator('[data-urg="true"]').click(); pg.locator('[data-imp="null"]').click(); pg.wait_for_timeout(50)
+    m = pg.evaluate("window.__odj.state().tasks.find(t=>t.title.startsWith('Répondre')).matrix")
+    check('« À classer » : urgence remise en automatique', m=={'important':None,'urgent':None}, m)
+    pg.keyboard.press('Escape'); pg.wait_for_timeout(250)
+    # dépôt dans son propre cadran : urgence forcée conservée
+    t0 = pg.evaluate("window.__odj.state().tasks.find(t=>t.title.startsWith('Trier')).matrix")
+    pg.locator('.mcard', has_text='Trier les mails').drag_to(pg.locator('[data-drop="q3"] .qhead')); pg.wait_for_timeout(100)
+    t1 = pg.evaluate("window.__odj.state().tasks.find(t=>t.title.startsWith('Trier')).matrix")
+    check('dépôt dans son propre cadran : rien ne change', t0==t1, (t0, t1))
+    # saisie du titre : pas de reconstruction de la matrice
+    pg.locator('.mcard', has_text='Trier les mails').click(); pg.wait_for_timeout(250)
+    pg.evaluate("window.__marker = document.querySelector('#matrix .quad'); ")
+    pg.locator('#dTitle').click(); pg.keyboard.press('End'); pg.keyboard.type(' !')
+    check('saisie du titre : carte mise à jour sans tout redessiner', pg.evaluate("window.__marker === document.querySelector('#matrix .quad')") and 'Trier les mails de la semaine !' in pg.locator('#matrix').inner_text())
+    pg.keyboard.press('Escape')
     b.close()
 print('ERREURS:', errs or 'aucune'); print(f'{sum(res)}/{len(res)} OK')

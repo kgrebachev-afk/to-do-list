@@ -463,7 +463,8 @@ function commit(mutator, opts = {}) {
     ui.coalesceKey = opts.coalesce || null;
   }
   persist();
-  render({ detail: opts.detail !== false });
+  if (opts.light && !ui.query.trim()) { renderHeader(); opts.light(); renderStatus(); }
+  else render({ detail: opts.detail !== false });
   return true;
 }
 function cancelPendingCompletes() {
@@ -719,7 +720,7 @@ function buildSections() {
   }
   if (ui.view === 'matrix') {
     const open = openSorted();
-    return ['q1', 'q2', 'q3', 'q4', 'inbox'].map((q) => ({ id: q, items: open.filter((t) => quadrantOf(t) === q) }));
+    return ['inbox', 'q1', 'q2', 'q3', 'q4'].map((q) => ({ id: q, items: open.filter((t) => quadrantOf(t) === q) }));
   }
   // Terminées, par semaine
   const groups = new Map();
@@ -759,7 +760,7 @@ function render(opts = {}) {
   els.matrix.hidden = !m;
   els.scroll.hidden = m;
   if (m) { els.list.innerHTML = ''; renderMatrix(); } else { els.matrix.innerHTML = ''; renderList(); }
-  if (!overlayMode() && els.app.classList.contains('detailOpen')) els.app.classList.remove('detailOpen');
+  if (!overlayMode() && els.app.classList.contains('detailOpen')) closeOverlay({ quiet: true });
   if (opts.detail !== false) renderDetail();
   renderStatus();
 }
@@ -938,16 +939,25 @@ function openOverlay() {
   if (els.app.classList.contains('detailOpen')) return;
   els.app.classList.add('detailOpen');
   els.scrim.hidden = !matrixActive() || isNarrow();
+  setBackgroundInert(true);
   try { history.pushState({ odjDetail: true }, ''); } catch (e) { /* file:// peut refuser */ }
+  // le focus passe dans le panneau (sauf s'il y est déjà, par exemple sur le titre)
+  requestAnimationFrame(() => { if (!els.detail.contains(document.activeElement)) { const b = els.detail.querySelector('.dBack'); if (b) b.focus({ preventScroll: true }); } });
 }
-function closeOverlay({ fromPop = false } = {}) {
-  if (!els.app.classList.contains('detailOpen')) return;
+/* Pendant que le panneau est ouvert, le reste de l'application ne reçoit ni clic ni Tab. */
+function setBackgroundInert(on) {
+  for (const el of [$('.topbar'), $('.listPane')]) if (el) el.inert = on;
+}
+function closeOverlay({ fromPop = false, quiet = false } = {}) {
+  if (!els.app.classList.contains('detailOpen')) { els.scrim.hidden = true; setBackgroundInert(false); return; }
   els.app.classList.remove('detailOpen');
   els.scrim.hidden = true;
+  setBackgroundInert(false);
   if (!fromPop && history.state && history.state.odjDetail) { try { history.back(); } catch (e) { /* ignore */ } }
+  if (quiet) return;
   const r = rowEl(ui.selectedId);
   if (r) r.scrollIntoView({ block: 'nearest' });
-  if (matrixActive()) { if (r) r.focus({ preventScroll: true }); } else els.list.focus({ preventScroll: true });
+  focusSelectionHost();
 }
 
 /* =====================================================================
@@ -986,6 +996,7 @@ function renderMatrix() {
   const open = openSorted();
   const by = { q1: [], q2: [], q3: [], q4: [], inbox: [] };
   for (const t of open) by[quadrantOf(t)].push(t);
+  const hadFocus = els.matrix.contains(document.activeElement) || document.activeElement === document.body;
   const scrolls = {};
   for (const b of $$('[data-drop]', els.matrix)) { const body = b.querySelector('.qbody'); if (body) scrolls[b.dataset.drop] = body.scrollTop; }
   if (!open.length) {
@@ -1005,6 +1016,16 @@ function renderMatrix() {
       ${quadHTML('q1', by.q1)}${quadHTML('q2', by.q2)}${quadHTML('q3', by.q3)}${quadHTML('q4', by.q4)}
     </div>`;
   for (const [k, v] of Object.entries(scrolls)) { const b = els.matrix.querySelector(`[data-drop="${k}"] .qbody`); if (b) b.scrollTop = v; }
+  if (mdrag.id && !els.matrix.querySelector(`.mcard[data-id="${CSS.escape(mdrag.id)}"]`)) endMatrixDrag();
+  if (hadFocus && !els.app.classList.contains('detailOpen') && !document.querySelector('dialog[open]')) {
+    const r = rowEl(ui.selectedId);
+    if (r) r.focus({ preventScroll: true });
+  }
+}
+function endMatrixDrag() {
+  mdrag.id = null;
+  els.matrix.classList.remove('isDragging');
+  for (const el of $$('.dragging, .dropBefore, .dropAfter, .dropOn', els.matrix)) el.classList.remove('dragging', 'dropBefore', 'dropAfter', 'dropOn');
 }
 function focusSelectionHost() {
   if (matrixActive()) { const r = rowEl(ui.selectedId); if (r) r.focus({ preventScroll: true }); }
@@ -1072,6 +1093,7 @@ function bindMatrix() {
   M.addEventListener('dragleave', (e) => { if (!M.contains(e.relatedTarget)) clearMarks(); });
   M.addEventListener('drop', (e) => {
     if (!mdrag.id) return;
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('application/x-todo-task')) { endMatrixDrag(); return; }
     const tg = target(e);
     clearMarks();
     if (!tg) return;
@@ -1082,7 +1104,7 @@ function bindMatrix() {
     const q = tg.zone.dataset.drop;
     const before = quadrantOf(t);
     commit(() => {
-      setQuadrant(t, q);
+      if (before !== q) setQuadrant(t, q);
       if (tg.card) { // ordre : avant ou après la tâche visée, dans la liste complète
         const order = openSorted().map((x) => x.id);
         const rest = order.filter((x) => x !== t.id);
@@ -1092,17 +1114,11 @@ function bindMatrix() {
       t.updatedAt = Date.now();
     }, { undo: before === q ? 'Changement de priorité' : 'Changement de cadran', detail: false });
     if (byId(ui.selectedId) && ui.selectedId === t.id) updateDetailBits(t);
-    const after = quadrantOf(t);
-    if (after !== q && q !== 'inbox') toast(`L'échéance la place automatiquement dans « ${QUADS[after].title} ».`);
     const el = rowEl(t.id);
     if (el && !reducedMotion()) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1400); }
   });
-  M.addEventListener('dragend', () => {
-    mdrag.id = null;
-    clearMarks();
-    M.classList.remove('isDragging');
-    for (const el of $$('.dragging', M)) el.classList.remove('dragging');
-  });
+  // sur document : si la carte d'origine a été redessinée pendant le glisser, l'événement ne remonte plus jusqu'à la matrice
+  document.addEventListener('dragend', () => { if (mdrag.id) endMatrixDrag(); });
 }
 
 /* ---------- Déplacement dans la liste ---------- */
@@ -1116,7 +1132,7 @@ function moveTask(id, how) {
   if (!t0 || t0.done) return;
   const global = how === 'top' || how === 'bottom';
   const order = global ? openSorted().map((t) => t.id) : sortableOrder();
-  if (!order) { toast('Le classement se modifie depuis les onglets À faire ou Aujourd\'hui, hors recherche.'); return; }
+  if (!order) { toast(matrixActive() ? 'Dans la matrice, glissez la tâche au-dessus ou en dessous d\'une autre pour changer son rang.' : 'Le classement se modifie depuis les onglets À faire ou Aujourd\'hui, hors recherche.'); return; }
   const i = order.indexOf(id);
   if (i < 0) return;
   let target = i;
@@ -1485,14 +1501,22 @@ function bindDetail() {
       const flat = el.value.replace(/[\r\n]+/g, ' ');
       if (flat !== el.value) el.value = flat;
       const v = nfc(flat);
-      commit(() => { t.title = v; t.updatedAt = Date.now(); }, { undo: 'Modification du titre', coalesce: `title:${t.id}`, detail: false });
+      commit(() => { t.title = v; t.updatedAt = Date.now(); }, {
+        undo: 'Modification du titre', coalesce: `title:${t.id}`, detail: false,
+        light: () => { const r = rowEl(t.id); const el = r && r.querySelector('.title, .mtitle'); if (el) el.innerHTML = t.title ? esc(t.title) : '<span class="untitled">Sans titre</span>'; },
+      });
     } else if (k === 'notes') {
       autosize(el);
-      commit(() => { t.notes = nfc(el.value); t.updatedAt = Date.now(); }, { undo: 'Modification des notes', coalesce: `notes:${t.id}`, detail: false });
+      const hadNotes = !!t.notes.trim();
+      const nv = nfc(el.value);
+      commit(() => { t.notes = nv; t.updatedAt = Date.now(); }, {
+        undo: 'Modification des notes', coalesce: `notes:${t.id}`, detail: false,
+        light: hadNotes === !!nv.trim() ? () => {} : null, // l'icône « notes » n'apparaît ou ne disparaît que rarement
+      });
       linksLater(t);
     } else if (k.startsWith('step:')) {
       const s = t.steps.find((x) => x.id === k.slice(5)); if (!s) return;
-      commit(() => { s.text = nfc(el.value); t.updatedAt = Date.now(); }, { undo: "Modification d'une étape", coalesce: k, detail: false });
+      commit(() => { s.text = nfc(el.value); t.updatedAt = Date.now(); }, { undo: "Modification d'une étape", coalesce: k, detail: false, light: () => {} });
     } else if (k === 'nth') {
       const n = parseInt(el.value, 10);
       if (!(n >= 1 && n <= 23)) return;
@@ -1559,7 +1583,11 @@ function bindDetail() {
     if ('imp' in b.dataset || 'urg' in b.dataset) {
       const key = 'imp' in b.dataset ? 'important' : 'urgent';
       const v = JSON.parse('imp' in b.dataset ? b.dataset.imp : b.dataset.urg);
-      commit(() => { t.matrix[key] = v; t.updatedAt = Date.now(); }, { undo: key === 'important' ? 'Importance modifiée' : 'Urgence modifiée', detail: false });
+      commit(() => {
+        if (key === 'important' && v === null) t.matrix = { important: null, urgent: null };
+        else t.matrix[key] = v;
+        t.updatedAt = Date.now();
+      }, { undo: key === 'important' ? 'Importance modifiée' : 'Urgence modifiée', detail: false });
       updateMatrixBits(t);
       return;
     }
@@ -1580,7 +1608,7 @@ function bindDetail() {
     if (e.key === 'Escape') {
       e.preventDefault(); e.stopPropagation();
       el.blur();
-      if (overlayMode()) closeOverlay(); else els.list.focus({ preventScroll: true });
+      if (overlayMode()) closeOverlay(); else focusSelectionHost();
       return;
     }
     if (k === 'title' && e.key === 'Enter') { e.preventDefault(); $('#dNotes', pane).focus(); return; }
@@ -1902,7 +1930,7 @@ const reminders = {
   },
 
   act(id, how) {
-    if (id === 'test') { this.testCard = false; this.closeNote('test'); this.refresh(); if (document.activeElement === document.body) els.list.focus({ preventScroll: true }); return; }
+    if (id === 'test') { this.testCard = false; this.closeNote('test'); this.refresh(); if (document.activeElement === document.body) focusSelectionHost(); return; }
     const t = byId(id);
     if (!t || !t.remind) { this.refresh(); return; }
     this.closeNote(id);
@@ -1918,7 +1946,7 @@ const reminders = {
     const sel = byId(ui.selectedId); if (sel) updateDetailBits(sel);
     this.refresh();
     // la carte a disparu : rendre le focus à la liste plutôt qu'à la page
-    if (how !== 'open' && (document.activeElement === document.body || !document.activeElement)) els.list.focus({ preventScroll: true });
+    if (how !== 'open' && (document.activeElement === document.body || !document.activeElement)) focusSelectionHost();
   },
   onCardClick(e) {
     const b = e.target.closest('[data-ract]');
@@ -2786,11 +2814,11 @@ function bindQuickAdd() {
       if (note) toast(note);
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      if (els.qa.value) { els.qa.value = ''; renderQuickHint(); } else { els.qa.blur(); els.list.focus({ preventScroll: true }); }
+      if (els.qa.value) { els.qa.value = ''; renderQuickHint(); } else { els.qa.blur(); focusSelectionHost(); }
     } else if (e.key === 'ArrowDown' && !els.qa.value) {
       e.preventDefault();
-      els.list.focus({ preventScroll: true });
       if (!byId(ui.selectedId) || !navOrder().includes(ui.selectedId)) selectIndex(0);
+      focusSelectionHost();
     }
   });
 }
@@ -2803,12 +2831,12 @@ function bindSearch() {
     if (e.key === 'Escape') {
       e.preventDefault();
       if (els.search.value) { els.search.value = ''; ui.query = ''; render({ detail: false }); }
-      else { els.search.blur(); els.list.focus({ preventScroll: true }); }
+      else { els.search.blur(); focusSelectionHost(); }
     } else if (e.key === 'Enter' || e.key === 'ArrowDown') {
       e.preventDefault();
       run.flush();
       const ids = navOrder();
-      if (ids.length) { els.list.focus({ preventScroll: true }); select(ids[0], { open: e.key === 'Enter' }); }
+      if (ids.length) { select(ids[0], { open: e.key === 'Enter' }); if (e.key !== 'Enter') focusSelectionHost(); }
     }
   });
 }
@@ -2880,6 +2908,12 @@ function setView(v) {
   els.matrix.scrollTop = 0;
 }
 
+/* La recherche ferme d'abord le panneau latéral (sinon le reste de l'application est inerte). */
+function openSearch() {
+  if (els.app.classList.contains('detailOpen') && overlayMode()) closeOverlay({ quiet: true });
+  els.search.focus(); els.search.select();
+}
+
 /* ---------- Clavier global ---------- */
 function isTyping(el) {
   if (!el) return false;
@@ -2894,7 +2928,7 @@ function onKey(e) {
   const typing = isTyping(e.target);
   const k = e.key;
 
-  if (ctrl && !e.altKey && (k === 'f' || k === 'F')) { e.preventDefault(); els.search.focus(); els.search.select(); return; }
+  if (ctrl && !e.altKey && (k === 'f' || k === 'F')) { e.preventDefault(); openSearch(); return; }
   if (ctrl && !typing && !e.altKey) {
     if ((k === 'z' || k === 'Z') && !e.shiftKey) { e.preventDefault(); undo(); return; }
     if (k === 'y' || k === 'Y' || ((k === 'z' || k === 'Z') && e.shiftKey)) { e.preventDefault(); redo(); return; }
@@ -2922,7 +2956,7 @@ function onKey(e) {
     case 'n': case 'N': case 'a': case 'A':
       e.preventDefault(); els.qa.focus(); return;
     case '/':
-      e.preventDefault(); els.search.focus(); els.search.select(); return;
+      e.preventDefault(); openSearch(); return;
     case '?':
       e.preventDefault(); $('#dlgShortcuts').showModal(); return;
     case 'ArrowDown': case 'j': case 'J':
@@ -2930,9 +2964,9 @@ function onKey(e) {
     case 'ArrowUp': case 'k': case 'K':
       e.preventDefault(); if (overlayMode() && els.app.classList.contains('detailOpen')) return; moveSelection(-1); focusSelectionHost(); return;
     case 'Home':
-      e.preventDefault(); selectIndex(0); return;
+      e.preventDefault(); selectIndex(0); focusSelectionHost(); return;
     case 'End':
-      e.preventDefault(); selectIndex(navOrder().length - 1); return;
+      e.preventDefault(); selectIndex(navOrder().length - 1); focusSelectionHost(); return;
     case 'Enter':
       if (onButton || e.target.tagName === 'INPUT') return;
       e.preventDefault(); focusTitle(); return;
