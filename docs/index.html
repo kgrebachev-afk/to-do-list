@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="To do list">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://kgrebachev-afk.github.io/to-do-list/jsqr.js 'sha256-RMDczUtTCbNxyOimeA0h0o2CZ/DNDmBMEH9UODcN06Y='; worker-src https://kgrebachev-afk.github.io/to-do-list/sw.js; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src https://mkihhdkjwnjklcnbdpvg.supabase.co; form-action 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://kgrebachev-afk.github.io/to-do-list/jsqr.js 'sha256-JJd07vUKFNOBtZ3OuT8UFV3DgDYhTVQ/Dt5rzHf5qU0='; worker-src https://kgrebachev-afk.github.io/to-do-list/sw.js; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src https://mkihhdkjwnjklcnbdpvg.supabase.co; form-action 'none'; base-uri 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0C6A74">
 <link rel="manifest" href="manifest.webmanifest">
@@ -15,7 +15,7 @@
 <title>To do list</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230C6A74'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <!--
-  To do list — version Bureau 1.7.0
+  To do list — version Bureau 1.7.1
   Fichier autonome : aucune connexion réseau, aucune installation.
   Polices Barlow et Barlow Semi Condensed (Jeremy Tribby), SIL Open Font License 1.1.
 -->
@@ -996,7 +996,7 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
       </div>
     </section>
 
-    <p class="about">Version 1.7.0. Vos tâches restent sur cet ordinateur : l'application ne se connecte à aucun serveur.</p>
+    <p class="about">Version 1.7.1. Vos tâches restent sur cet ordinateur : l'application ne se connecte à aucun serveur.</p>
   </div>
 </dialog>
 
@@ -1111,7 +1111,7 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
 const APP = 'ordre-du-jour'; // identifiant interne du format de données (inchangé pour compatibilité)
 const APP_NAME = 'To do list';
 const SCHEMA = 1;
-const VERSION = '1.7.0';
+const VERSION = '1.7.1';
 const KEY_DATA = 'odj.data.v1';
 const KEY_SNAPS = 'odj.snapshots.v1';
 const KEY_BACKUP = 'odj.backup.v1';
@@ -1357,6 +1357,16 @@ function offsetPhrase(days, time) {
   if (days < 0) return `${-days} jours avant à ${at}`;
   if (days === 1) return `le lendemain à ${at}`;
   return `${days} jours après à ${at}`;
+}
+/* Tâche récurrente avec échéance : le rappel se règle par rapport à chaque occurrence. */
+const isRecurring = (t) => !!(t && t.repeat && t.due && !t.done);
+function relDayLabel(days) {
+  if (days === 0) return 'Le jour même';
+  if (days === -1) return 'La veille';
+  if (days === -7) return '1 semaine avant';
+  if (days < 0) return `${-days} jours avant`;
+  if (days === 1) return 'Le lendemain';
+  return `${days} jours après`;
 }
 /* Décaler l'échéance en gardant l'écart avec le rappel (« le rappel suit la tâche »). */
 function shiftDue(t, v) {
@@ -2437,6 +2447,7 @@ function renderDetail() {
       <span class="propLabel" id="lblRem">Rappel</span>
       <div class="propCtl" role="group" aria-labelledby="lblRem">
         <input type="date" class="field" id="dRemDate" data-k="remdate" aria-label="Date du rappel">
+        <select id="dRemRel" data-k="remrel" aria-label="Moment du rappel, à chaque occurrence" hidden></select>
         <input type="time" class="field" id="dRemTime" data-k="remtime" step="300" aria-label="Heure du rappel">
         <button type="button" class="pill" data-rem="1h" data-k="rem-1h">Dans 1 h</button>
         <button type="button" class="pill" data-rem="tomorrow" data-k="rem-tomorrow" id="dRemTomorrow"></button>
@@ -2542,12 +2553,26 @@ function updateRemindBits(t) {
   const rd = $('#dRemDate', pane), rt = $('#dRemTime', pane);
   if (!rd) return;
   const r = t.remind;
+  const rel = isRecurring(t);
   if (document.activeElement !== rd) rd.value = r ? r.date : '';
   if (document.activeElement !== rt) rt.value = r ? r.time : '';
+  // Tâche récurrente : le rappel se règle par rapport à chaque occurrence (« la veille à 17 h »), pas par une date
+  const rs = $('#dRemRel', pane);
+  rd.hidden = rel; rs.hidden = !rel;
+  if (rel) {
+    const off = r ? diffDays(r.date, t.due) : null;
+    const offs = [0, -1, -2, -3, -7];
+    if (off !== null && !offs.includes(off)) offs.push(off);
+    rs.innerHTML = `<option value="">Pas de rappel</option>` + offs.sort((a, b) => b - a).map((d) => `<option value="${d}">${esc(relDayLabel(d))}</option>`).join('');
+    rs.value = off === null ? '' : String(off);
+    rt.disabled = false;
+  }
   const dtl = hLabel(state.settings.remindTime);
   $('#dRemTomorrow', pane).textContent = `Demain à ${dtl}`;
+  $('#dRemTomorrow', pane).hidden = rel;
+  pane.querySelector('[data-rem="1h"]').hidden = rel;
   const dday = $('#dRemDday', pane);
-  dday.textContent = `Le jour J à ${dtl}`;
+  dday.textContent = rel ? `Le jour même à ${dtl}` : `Le jour J à ${dtl}`;
   dday.hidden = !t.due;
   pane.querySelector('[data-rem="eve"]').hidden = !t.due;
   $('#dRemNone', pane).hidden = !r;
@@ -2555,6 +2580,21 @@ function updateRemindBits(t) {
   for (const b of $$('.pill[data-rem]', pane)) b.setAttribute('aria-pressed', 'false');
   const hint = $('#dRemHint', pane);
   hint.classList.remove('late');
+  if (rel && !t.done) {
+    if (!r) { hint.textContent = `Choisissez quand être prévenu : le rappel reviendra à chaque occurrence (${repeatSentence(t.repeat).replace(/^Se répète /, '')}).`; return; }
+    const parts = [`Rappel ${offsetPhrase(diffDays(r.date, t.due), r.time)}, à chaque occurrence (${repeatSentence(t.repeat).replace(/^Se répète /, '')}).`];
+    const nxt = remindNext(t);
+    if (nxt) parts.push(`Prochain : ${fmtWhenLong(nxt)}.`);
+    else {
+      // rappel de cette occurrence déjà passé : on annonce celui de l'occurrence suivante
+      const after = nextOccurrence(t.repeat, t.due);
+      const ms = remindMs({ date: addDays(after, diffDays(r.date, t.due)), time: r.time });
+      parts.push(r.firedAt ? `Envoyé ${fmtWhenLong(r.firedAt)} pour cette occurrence ; le suivant ${fmtWhenLong(ms)}, une fois celle-ci cochée.` : `L'heure est passée pour cette occurrence ; le suivant ${fmtWhenLong(ms)}, une fois celle-ci cochée.`);
+    }
+    if (reminders.permission() !== 'granted') parts.push('Il s\'affichera dans l\'application (notifications Windows non activées, voir Réglages).');
+    hint.textContent = parts.join(' ');
+    return;
+  }
   if (!r) { hint.textContent = ''; return; }
   const parts = [];
   if (t.done) parts.push('Tâche terminée : pas de rappel.');
@@ -2664,6 +2704,13 @@ function bindDetail() {
       const v = isISO(el.value) ? el.value : null;
       if (!v && el.value) return; // saisie incomplète
       setDue(t, v);
+    } else if (isRecurring(t) && (k === 'remrel' || k === 'remtime')) {
+      const sv = $('#dRemRel', pane).value, tm = $('#dRemTime', pane).value;
+      if (k === 'remrel' && sv === '') { if (t.remind) setRemind(t, null); return; }
+      if (k === 'remtime' && !isHM(tm)) return;
+      const off = sv === '' ? 0 : parseInt(sv, 10);
+      const time = isHM(tm) ? tm : (t.remind ? t.remind.time : state.settings.remindTime);
+      setRemind(t, relRemind(t, off, time));
     } else if (k === 'remdate' || k === 'remtime') {
       const d = $('#dRemDate', pane).value, tm = $('#dRemTime', pane).value;
       if (k === 'remdate' && !d) { if (t.remind) setRemind(t, null); return; }
@@ -2830,9 +2877,13 @@ function removeStep(t, sid, focusWhere) {
   const target = focusWhere === 'prev' ? t.steps[i - 1] : (t.steps[i] || t.steps[i - 1]);
   if (target) focusStep(target.id); else $('#dAddStep', els.detail).focus();
 }
+/* Rappel « N jours avant/après l'échéance à HH:MM » pour une tâche récurrente. */
+function relRemind(t, off, time) { return { date: addDays(t.due, off), time }; }
 function remindPreset(t, kind) {
   const today = todayISO(), dt = state.settings.remindTime;
   if (kind === 'none') return null;
+  if (isRecurring(t) && kind === 'dday') return relRemind(t, 0, dt);
+  if (isRecurring(t) && kind === 'eve') return relRemind(t, -1, '17:00');
   if (kind === '1h') { const d = new Date(Date.now() + 3600000); d.setSeconds(0, 0); d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5); return { date: toISO(d), time: `${pad(d.getHours())}:${pad(d.getMinutes())}` }; }
   if (kind === 'tomorrow') return { date: addDays(today, 1), time: dt };
   if (kind === 'dday') return { date: t.due || today, time: dt };
@@ -3423,7 +3474,7 @@ const fileSync = {
       return { tone: 'ok', icon: 'ok', text: `Sauvegarde automatique dans ${this.handle.name}${at}`, title: 'Chaque modification est enregistrée toute seule dans ce fichier.', action: null };
     }
     if (this.state === 'permission') {
-      return { tone: 'warn', icon: 'alert', text: 'Sauvegarde du fichier en pause : cliquez n\'importe où pour la reprendre.', title: `Chrome demande de confirmer l'accès à ${this.handle.name}. Choisissez « Autoriser à chaque visite » pour que la sauvegarde reprenne toute seule. En attendant, vos tâches restent enregistrées dans Chrome.`, action: { id: 'reconnect', label: 'Reprendre' } };
+      return { tone: 'warn', icon: 'alert', text: 'Sauvegarde du fichier en pause : cliquez n\'importe où, puis « Autoriser à chaque visite ».', title: `Chrome demande de confirmer l'accès à ${this.handle.name}. Choisissez « Autoriser à chaque visite » pour que la sauvegarde reprenne toute seule. En attendant, vos tâches restent enregistrées dans Chrome.`, action: { id: 'reconnect', label: 'Reprendre' } };
     }
     if (this.state === 'error') {
       return { tone: 'err', icon: 'alert', text: `Écriture impossible dans ${this.handle ? this.handle.name : 'le fichier'} : ${this.error}`, action: { id: 'retry', label: 'Réessayer' } };
@@ -3535,7 +3586,10 @@ const fileSync = {
   async reconnect({ auto = false } = {}) {
     if (!this.handle) return;
     try {
-      const p = await this.handle.requestPermission({ mode: 'readwrite' }); // appel immédiat, dans le geste
+      const ask = this.handle.requestPermission({ mode: 'readwrite' }); // appel immédiat, dans le geste
+      // Chrome affiche sa question en même temps : on indique le bon choix, une fois pour toutes
+      toast('Dans la fenêtre de Chrome, choisissez « Autoriser à chaque visite » (« Allow on every visit ») : la sauvegarde ne se mettra plus en pause.', { duration: 12000 });
+      const p = await ask;
       if (p !== 'granted') {
         if (auto) this.autoDeclined = true; // on ne redemande pas tout seul pendant cette session
         toast('Accès au fichier refusé : vos tâches restent enregistrées dans Chrome. Cliquez sur « Reprendre » en bas à gauche quand vous voulez.', { duration: 8000 });
