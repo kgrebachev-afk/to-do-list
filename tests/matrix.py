@@ -9,13 +9,13 @@ def check(n,c,i=''): res.append(bool(c)); print(('PASS ' if c else 'FAIL ')+n+('
 SEED = """() => {
  const day=86400000, now=Date.now(), T=(o)=>Object.assign({id:crypto.randomUUID(),notes:'',steps:[],done:false,doneAt:null,due:null,repeat:null,createdAt:now-5*day,updatedAt:now-5*day},o);
  const tasks=[
-  T({title:'Clôture octobre : J+3 reporting usine',position:0,due:'2026-10-22',matrix:{important:true,urgent:null},steps:[{id:'s1',text:'Extraire la balance',done:true},{id:'s2',text:'Pack CFO',done:false}]}),
-  T({title:'Répondre aux achats sur les écarts de PPV',position:1,due:'2026-10-20',matrix:{important:false,urgent:null}}),
+  T({title:'Clôture octobre : J+3 reporting usine',position:0,due:'2026-10-22',matrix:{important:true,urgent:null},steps:[{id:'s1',text:'Extraire la balance',done:true},{id:'s2',text:'Pack direction',done:false}]}),
+  T({title:'Répondre aux achats sur les écarts de prix',position:1,due:'2026-10-20',matrix:{important:false,urgent:null}}),
   T({title:'Préparer le budget atelier 2027',position:2,due:'2026-11-15',matrix:{important:true,urgent:null}}),
   T({title:'Former le nouvel arrivant sur Power BI',position:3,matrix:{important:true,urgent:null}}),
   T({title:'Trier les mails de la semaine',position:4,matrix:{important:false,urgent:null}}),
   T({title:'Mettre à jour l\\'estimate Q4',position:5,due:'2026-10-21'}),
-  T({title:'Demander la licence Copilot à l\\'IT',position:6}),
+  T({title:'Demander une licence logicielle à l\\'IT',position:6}),
   T({title:'Relire la note coûts de non-qualité',position:7,due:'2026-10-30'}),
   T({title:'Réserver la salle pour le point mensuel',position:8,due:'2026-10-23',matrix:{important:false,urgent:null}}),
  ];
@@ -30,9 +30,9 @@ with sync_playwright() as p:
     pg.click('#tab-matrix'); pg.wait_for_timeout(200)
     check('Q1 : important + échéance proche', quad(pg,'q1')==['Clôture octobre : J+3 reporting usine'], quad(pg,'q1'))
     check('Q2 : important, échéance lointaine ou sans date', quad(pg,'q2')==['Préparer le budget atelier 2027','Former le nouvel arrivant sur Power BI'], quad(pg,'q2'))
-    check('Q3 : pas important mais urgent (retard, J+2)', quad(pg,'q3')==['Répondre aux achats sur les écarts de PPV','Réserver la salle pour le point mensuel'], quad(pg,'q3'))
+    check('Q3 : pas important mais urgent (retard, J+2)', quad(pg,'q3')==['Répondre aux achats sur les écarts de prix','Réserver la salle pour le point mensuel'], quad(pg,'q3'))
     check('Q4 : ni l\'un ni l\'autre', quad(pg,'q4')==['Trier les mails de la semaine'], quad(pg,'q4'))
-    check('« À classer » : importance non renseignée', quad(pg,'inbox')==['Mettre à jour l\'estimate Q4','Demander la licence Copilot à l\'IT','Relire la note coûts de non-qualité'], quad(pg,'inbox'))
+    check('« À classer » : importance non renseignée', quad(pg,'inbox')==['Mettre à jour l\'estimate Q4','Demander une licence logicielle à l\'IT','Relire la note coûts de non-qualité'], quad(pg,'inbox'))
     check('onglet Matrice : compteur du cadran 1', pg.locator('#count-matrix').inner_text()=='1')
     pg.screenshot(path=str(OUT/'70-matrix.png'))
     # tri rapide
@@ -43,9 +43,9 @@ with sync_playwright() as p:
     pg.keyboard.press('Control+z'); pg.wait_for_timeout(100)
     check('Ctrl+Z annule le classement', 'Mettre à jour l\'estimate Q4' in quad(pg,'inbox'), quad(pg,'inbox'))
     # glisser-déposer vers un cadran
-    src = pg.locator('.mcard', has_text='licence Copilot'); dst = pg.locator('[data-drop="q2"]')
+    src = pg.locator('.mcard', has_text='licence logicielle'); dst = pg.locator('[data-drop="q2"]')
     src.drag_to(dst); pg.wait_for_timeout(150)
-    check('glisser dans Q2 : importante, urgence auto conservée', 'Demander la licence Copilot à l\'IT' in quad(pg,'q2') and pg.evaluate("window.__odj.state().tasks.find(t=>t.title.includes('Copilot')).matrix")=={'important':True,'urgent':None}, quad(pg,'q2'))
+    check('glisser dans Q2 : importante, urgence auto conservée', 'Demander une licence logicielle à l\'IT' in quad(pg,'q2') and pg.evaluate("window.__odj.state().tasks.find(t=>t.title.includes('licence logicielle')).matrix")=={'important':True,'urgent':None}, quad(pg,'q2'))
     # glisser Q2 → Q1 sans échéance : urgence forcée
     pg.locator('.mcard', has_text='Former le nouvel').drag_to(pg.locator('[data-drop="q1"]')); pg.wait_for_timeout(150)
     m = pg.evaluate("window.__odj.state().tasks.find(t=>t.title.startsWith('Former')).matrix")
@@ -98,7 +98,7 @@ with sync_playwright() as p:
     check('après la recherche : retour à la matrice', pg.locator('#matrix').is_visible())
     # persistance
     pg.reload(); pg.wait_for_timeout(300)
-    check('rechargement : classement conservé', pg.evaluate("window.__odj.state().tasks.find(t=>t.title.includes('Copilot')).matrix.important")==True)
+    check('rechargement : classement conservé', pg.evaluate("window.__odj.state().tasks.find(t=>t.title.includes('licence logicielle')).matrix.important")==True)
     # fenêtre étroite
     pg.set_viewport_size({'width':700,'height':900}); pg.click('#tab-matrix'); pg.wait_for_timeout(250)
     pg.screenshot(path=str(OUT/'72-matrix-narrow.png'))

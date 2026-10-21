@@ -38,18 +38,18 @@ with sync_playwright() as p:
     check('jour ouvré après ven. 30/10 = lun. 2/11 (1er nov. dimanche)', wd=='2026-11-02', wd)
     wd2 = pg.evaluate("window.__odj.nextOccurrence({type:'workday'},'2026-11-10')")
     check('jour ouvré après 10/11 = 12/11 (11 nov. férié)', wd2=='2026-11-12', wd2)
-    pq = pg.evaluate("[window.__odj.parseQuick('Appeler Marc @ven'), window.__odj.parseQuick('Budget @25/10 ok'), window.__odj.parseQuick('mail à paul@volvo.com'), window.__odj.parseQuick('Stock @01/01'), window.__odj.parseQuick('Test @31/02')]")
+    pq = pg.evaluate("[window.__odj.parseQuick('Appeler Marc @ven'), window.__odj.parseQuick('Budget @25/10 ok'), window.__odj.parseQuick('mail à paul@exemple.fr'), window.__odj.parseQuick('Stock @01/01'), window.__odj.parseQuick('Test @31/02')]")
     check('saisie @ven → vendredi 23/10', (pq[0]['title'],pq[0]['due'])==('Appeler Marc','2026-10-23'), pq[0])
     check('saisie @25/10', (pq[1]['title'],pq[1]['due'])==('Budget ok','2026-10-25'), pq[1])
-    check('adresse mail non interprétée', (pq[2]['title'],pq[2]['due'],pq[2]['remind'])==('mail à paul@volvo.com',None,None), pq[2])
+    check('adresse mail non interprétée', (pq[2]['title'],pq[2]['due'],pq[2]['remind'])==('mail à paul@exemple.fr',None,None), pq[2])
     check('@01/01 → année suivante', pq[3]['due']=='2027-01-01', pq[3])
     check('@31/02 invalide laissé dans le titre', (pq[4]['title'],pq[4]['due'])==('Test @31/02',None), pq[4])
 
     # --- ajout
     qa = pg.locator('#qaInput')
-    for t in ['Clôture J+3','Relancer achats PPV','Estimate Q4 @ven','Heures HPU','Point atelier']:
+    for t in ['Clôture J+3','Relancer achats fournisseurs','Estimate Q4 @ven','Heures atelier','Point atelier']:
         qa.fill(t); qa.press('Enter')
-    check('5 tâches ajoutées en bas, dans l\'ordre', open_titles(pg)==['Clôture J+3','Relancer achats PPV','Estimate Q4','Heures HPU','Point atelier'], open_titles(pg))
+    check('5 tâches ajoutées en bas, dans l\'ordre', open_titles(pg)==['Clôture J+3','Relancer achats fournisseurs','Estimate Q4','Heures atelier','Point atelier'], open_titles(pg))
     qa.fill('Urgent : appeler la banque'); qa.press('Alt+Enter')
     check('Alt+Entrée ajoute en haut', open_titles(pg)[0]=='Urgent : appeler la banque', open_titles(pg))
     check('rang 1 affiché en tête', pg.locator('#list .row').first.locator('.num').inner_text()=='1')
@@ -61,32 +61,32 @@ with sync_playwright() as p:
     pg.locator('#list .row').nth(0).click()
     pg.keyboard.press('ArrowDown'); pg.keyboard.press('ArrowDown')
     sel = pg.evaluate("window.__odj.state().tasks.find(t=>t.id===window.__odj.ui.selectedId).title")
-    check('flèches : sélection sur la 3e', sel=='Relancer achats PPV', sel)
+    check('flèches : sélection sur la 3e', sel=='Relancer achats fournisseurs', sel)
     pg.keyboard.press('Alt+ArrowUp')
-    check('Alt+↑ monte la tâche', open_titles(pg)[1]=='Relancer achats PPV', open_titles(pg))
+    check('Alt+↑ monte la tâche', open_titles(pg)[1]=='Relancer achats fournisseurs', open_titles(pg))
     pg.keyboard.press('Alt+Shift+ArrowUp')
-    check('Alt+Maj+↑ met en tête', open_titles(pg)[0]=='Relancer achats PPV', open_titles(pg))
+    check('Alt+Maj+↑ met en tête', open_titles(pg)[0]=='Relancer achats fournisseurs', open_titles(pg))
     pg.keyboard.press('Control+z')
-    check('Ctrl+Z annule les déplacements (regroupés)', open_titles(pg)[2]=='Relancer achats PPV', open_titles(pg))
+    check('Ctrl+Z annule les déplacements (regroupés)', open_titles(pg)[2]=='Relancer achats fournisseurs', open_titles(pg))
     pg.keyboard.press('Control+y')
-    check('Ctrl+Y rétablit', open_titles(pg)[0]=='Relancer achats PPV', open_titles(pg))
+    check('Ctrl+Y rétablit', open_titles(pg)[0]=='Relancer achats fournisseurs', open_titles(pg))
 
     # --- terminer au clavier avec animation, sélection avance
     pg.keyboard.press('Home')
     pg.keyboard.press('Space'); pg.wait_for_timeout(800)
-    t = [x for x in tasks(pg) if x['title']=='Relancer achats PPV'][0]
+    t = [x for x in tasks(pg) if x['title']=='Relancer achats fournisseurs'][0]
     check('Espace termine la tâche', t['done'] is True)
     sel = pg.evaluate("window.__odj.state().tasks.find(t=>t.id===window.__odj.ui.selectedId).title")
     check('la sélection passe à la suivante', sel=='Urgent : appeler la banque', sel)
     check('groupe « Terminées aujourd\'hui » visible (replié)', pg.locator('[data-toggle="doneToday"]').count()==1 and pg.locator('[data-toggle="doneToday"]').get_attribute('aria-expanded')=='false')
     pg.keyboard.press('Control+z')
-    t = [x for x in tasks(pg) if x['title']=='Relancer achats PPV'][0]
+    t = [x for x in tasks(pg) if x['title']=='Relancer achats fournisseurs'][0]
     check('Ctrl+Z rouvre la tâche', t['done'] is False)
 
     # --- clic sur case (souris) puis double clic pendant l'animation annule
-    row = pg.locator('#list .row', has_text='Heures HPU')
+    row = pg.locator('#list .row', has_text='Heures atelier')
     row.locator('.check').click(); pg.wait_for_timeout(100); row.locator('.check').click(); pg.wait_for_timeout(900)
-    t = [x for x in tasks(pg) if x['title']=='Heures HPU'][0]
+    t = [x for x in tasks(pg) if x['title']=='Heures atelier'][0]
     check('second clic pendant l\'animation annule', t['done'] is False)
 
     # --- suppression + annulation
@@ -111,28 +111,28 @@ with sync_playwright() as p:
     title = pg.locator('#dTitle'); title.click(); pg.keyboard.press('End'); pg.keyboard.type(' octobre')
     check('titre modifié dans la liste en direct', 'Clôture J+3 octobre' in visible_titles(pg), visible_titles(pg))
     add = pg.locator('#dAddStep'); add.click()
-    for s in ['Extraire la balance SAP','Contrôler les provisions']:
+    for s in ['Extraire la balance comptable','Contrôler les provisions']:
         pg.keyboard.type(s); pg.keyboard.press('Enter')
-    pg.evaluate("""() => { const el = document.querySelector('#dAddStep'); el.focus(); const dt = new DataTransfer(); dt.setData('text/plain', '- Envoyer le reporting\\n- [ ] Valider avec le CFO\\n3. Archiver'); el.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles:true, cancelable:true})); }""")
+    pg.evaluate("""() => { const el = document.querySelector('#dAddStep'); el.focus(); const dt = new DataTransfer(); dt.setData('text/plain', '- Envoyer le reporting\\n- [ ] Valider avec la direction\\n3. Archiver'); el.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles:true, cancelable:true})); }""")
     t = [x for x in tasks(pg) if x['title'].startswith('Clôture')][0]
-    check('étapes ajoutées (Entrée + collage multi-lignes nettoyé)', [s['text'] for s in t['steps']]==['Extraire la balance SAP','Contrôler les provisions','Envoyer le reporting','Valider avec le CFO','Archiver'], [s['text'] for s in t['steps']])
+    check('étapes ajoutées (Entrée + collage multi-lignes nettoyé)', [s['text'] for s in t['steps']]==['Extraire la balance comptable','Contrôler les provisions','Envoyer le reporting','Valider avec la direction','Archiver'], [s['text'] for s in t['steps']])
     # Entrée au milieu d'une étape la coupe ; Alt+↓ déplace
     first = pg.locator('.stepText').first; first.click(); pg.keyboard.press('End')
     pg.keyboard.press('Alt+ArrowDown')
     t = [x for x in tasks(pg) if x['title'].startswith('Clôture')][0]
-    check('Alt+↓ déplace une étape', t['steps'][1]['text']=='Extraire la balance SAP', [s['text'] for s in t['steps']])
+    check('Alt+↓ déplace une étape', t['steps'][1]['text']=='Extraire la balance comptable', [s['text'] for s in t['steps']])
     pg.locator('.step .check').first.click()
     pg.locator('.step .check').nth(1).click()
     check('compteur étapes 2 sur 5', pg.locator('#dStepsN').inner_text()=='2 sur 5', pg.locator('#dStepsN').inner_text())
     check('puce 2/5 dans la liste', '2/5' in pg.locator('#list .row', has_text='Clôture J+3').inner_text())
     notes = pg.locator('#dNotes'); notes.click()
-    pg.keyboard.type('Fichier : S:\\Finance\\Clôture\\2026\\Balance oct.xlsx\nVoir https://volvogroup.sharepoint.com/sites/finance/clôture\nContact : Julie (comptabilité)')
+    pg.keyboard.type('Fichier : X:\\Dossiers\\Projet\\2026\\Suivi oct.xlsx\nVoir https://exemple.sharepoint.com/sites/equipe/dossier\nContact : Julie (comptabilité)')
     pg.wait_for_timeout(400)
     chips = pg.locator('#dLinks .linkChip').all_inner_texts()
-    check('liens et chemins détectés dans les notes', len(chips)==2 and 'S:\\Finance\\Clôture\\2026\\Balance oct.xlsx' in chips, chips)
-    pg.locator('#dLinks .linkChip', has_text='S:\\').click(); pg.wait_for_timeout(200)
+    check('liens et chemins détectés dans les notes', len(chips)==2 and 'X:\\Dossiers\\Projet\\2026\\Suivi oct.xlsx' in chips, chips)
+    pg.locator('#dLinks .linkChip', has_text='X:\\').click(); pg.wait_for_timeout(200)
     clip = pg.evaluate('navigator.clipboard.readText()')
-    check('clic sur un chemin le copie', clip=='S:\\Finance\\Clôture\\2026\\Balance oct.xlsx', clip)
+    check('clic sur un chemin le copie', clip=='X:\\Dossiers\\Projet\\2026\\Suivi oct.xlsx', clip)
     check('icône notes dans la liste', pg.locator('#list .row', has_text='Clôture J+3').locator('.mini').count()>=1)
 
     # --- répétition : 3e jour ouvré
