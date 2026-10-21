@@ -2372,7 +2372,7 @@ const fileSync = {
       return { tone: 'ok', icon: 'ok', text: `Sauvegarde automatique dans ${this.handle.name}${at}`, title: 'Chaque modification est enregistrée toute seule dans ce fichier.', action: null };
     }
     if (this.state === 'permission') {
-      return { tone: 'warn', icon: 'alert', text: 'Sauvegarde du fichier en pause : cliquez n\'importe où pour la reprendre.', title: `Chrome demande de confirmer l'accès à ${this.handle.name}. Choisissez « Autoriser à chaque visite » pour que la sauvegarde reprenne toute seule. En attendant, vos tâches restent enregistrées dans Chrome.`, action: { id: 'reconnect', label: 'Reprendre' } };
+      return { tone: 'warn', icon: 'alert', text: 'Sauvegarde du fichier en pause : cliquez n\'importe où, puis « Autoriser à chaque visite ».', title: `Chrome demande de confirmer l'accès à ${this.handle.name}. Choisissez « Autoriser à chaque visite » pour que la sauvegarde reprenne toute seule. En attendant, vos tâches restent enregistrées dans Chrome.`, action: { id: 'reconnect', label: 'Reprendre' } };
     }
     if (this.state === 'error') {
       return { tone: 'err', icon: 'alert', text: `Écriture impossible dans ${this.handle ? this.handle.name : 'le fichier'} : ${this.error}`, action: { id: 'retry', label: 'Réessayer' } };
@@ -2484,7 +2484,10 @@ const fileSync = {
   async reconnect({ auto = false } = {}) {
     if (!this.handle) return;
     try {
-      const p = await this.handle.requestPermission({ mode: 'readwrite' }); // appel immédiat, dans le geste
+      const ask = this.handle.requestPermission({ mode: 'readwrite' }); // appel immédiat, dans le geste
+      // Chrome affiche sa question en même temps : on indique le bon choix, une fois pour toutes
+      toast('Dans la fenêtre de Chrome, choisissez « Autoriser à chaque visite » (« Allow on every visit ») : la sauvegarde ne se mettra plus en pause.', { duration: 12000 });
+      const p = await ask;
       if (p !== 'granted') {
         if (auto) this.autoDeclined = true; // on ne redemande pas tout seul pendant cette session
         toast('Accès au fichier refusé : vos tâches restent enregistrées dans Chrome. Cliquez sur « Reprendre » en bas à gauche quand vous voulez.', { duration: 8000 });
