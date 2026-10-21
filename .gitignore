@@ -8,3 +8,4 @@ __pycache__/
 supabase/.temp/
 *.pem
 *.key
+.rapport/
