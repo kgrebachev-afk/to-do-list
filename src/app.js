@@ -46,7 +46,7 @@ const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const isNarrow = () => matchMedia('(max-width: 860px)').matches;
 
-const validId = (v) => typeof v === 'string' && /^[A-Za-z0-9:_-]{1,100}$/.test(v) && v !== '__settings';
+const validId = (v) => typeof v === 'string' && /^[A-Za-z0-9:_-]{1,80}$/.test(v) && v !== '__settings'; // 80 : limite du serveur
 function uid() {
   try { if (crypto.randomUUID) return crypto.randomUUID(); } catch (e) { /* contexte non sécurisé */ }
   const b = crypto.getRandomValues(new Uint8Array(16));
@@ -3274,6 +3274,7 @@ const cloud = {
     return { token, id, expires: Date.now() + 10 * 60000 - 5000 };
   },
   pairStatus(id) { return this.call('pair_status', { p_id: id }); },
+  cancelPairing(id) { return this.isOn() ? this.call('pair_cancel', { p_id: id }) : Promise.resolve(); },
   async takePairing(token) {
     const { id, key } = await pairCode.keys(token);
     const blob = await this.rpc('pair_take', { p_id: id });
@@ -3506,6 +3507,11 @@ const cloud = {
         if (t && t.id === r.id && t.updatedAt === at) tasks.push(t);
       }
       const m = mergeTasks(state.tasks, tasks, state.deleted, deleted);
+      // même date, contenu différent (deux appareils à la même milliseconde) : la version du serveur fait foi
+      for (const t of tasks) {
+        const k = m.tasks.findIndex((x) => x.id === t.id);
+        if (k >= 0 && m.tasks[k].updatedAt === t.updatedAt && JSON.stringify(m.tasks[k]) !== JSON.stringify(t)) m.tasks[k] = JSON.parse(JSON.stringify(t));
+      }
       const changed = !sameTasks(m.tasks, state.tasks);
       if (changed) state.tasks = m.tasks;
       state.deleted = m.deleted;
@@ -3701,7 +3707,12 @@ const syncUi = {
     this.render();
   },
   close() { this.stopTimer(); scanner.stop(); const d = $('#dlgSync'); if (d.open) d.close(); },
-  stopTimer() { clearInterval(this.timer); this.timer = null; },
+  /* Le QR code affiché est annulé dès qu'il quitte l'écran (fenêtre fermée, autre étape). */
+  stopTimer() {
+    clearInterval(this.timer); this.timer = null;
+    const o = this.offer; this.offer = null;
+    if (o && !o.done) cloud.cancelPairing(o.id).catch(() => {});
+  },
   fail(e) {
     const m = $('#syncMsg');
     let txt = e.message || String(e);
@@ -3809,7 +3820,7 @@ const syncUi = {
       try { s = await cloud.pairStatus(offer.id); } catch (e) { /* réessayé au passage suivant */ }
       if (!this.live(gen, 'show')) return;
       if (s && s.state === 'used') {
-        this.stopTimer();
+        offer.done = true; this.stopTimer();
         wrap.classList.add('masked'); $('#pairLine').hidden = true;
         const at = s.at ? new Date(s.at) : new Date();
         say(`${icon('ok')}<span>Utilisé à ${pad(at.getHours())}:${pad(at.getMinutes())}</span><button type="button" class="btn" data-sync="show">Ajouter un autre appareil</button>`, 'over ok');
@@ -3884,9 +3895,13 @@ const syncUi = {
       setTimeout(() => { if (this.live(gen, 'confirm')) { const go = $('#syncFoot [data-sync="join-pending"]'); if (go) go.disabled = false; } }, 1500);
     } catch (e) {
       if (!this.live(gen, 'confirm') || (input && this.input && this.input !== input)) return;
-      this.pending = null; this.input = null;
-      if (e.badCode) { this.step = 'enter'; this.render(); this.fail(e); return; }
-      if (box) box.textContent = e.offline ? 'Pas de connexion au serveur. Vérifiez le réseau, puis réessayez.' : (e.message || 'Vérification impossible pour le moment.');
+      if (e.badCode) { this.pending = null; this.input = null; this.step = 'enter'; this.render(); this.fail(e); return; }
+      // erreur passagère : le code déjà récupéré est gardé, on peut réessayer
+      if (box) {
+        box.textContent = e.offline ? 'Pas de connexion au serveur. Vérifiez le réseau, puis réessayez.' : (e.message || 'Vérification impossible pour le moment.');
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.dataset.sync = 'retry-info'; b.textContent = 'Réessayer';
+        box.appendChild(b);
+      }
     }
   },
   async act(a) {
@@ -3923,7 +3938,7 @@ const syncUi = {
         toast('Appareil connecté : vos tâches sont synchronisées.', { duration: 6000 });
         return;
       }
-      if (a === 'ios-anyway') { this.step = 'confirm'; this.render(); return; }
+      if (a === 'ios-anyway' || a === 'retry-info') { this.step = 'confirm'; this.render(); return; }
       if (a === 'change-go') {
         this.busy(true);
         await cloud.changeCode();
@@ -4014,7 +4029,7 @@ function bindSync() {
     if (b) syncUi.act(b.dataset.sync);
     else if (e.target === dlg) syncUi.close();
   });
-  dlg.addEventListener('close', () => scanner.stop());
+  dlg.addEventListener('close', () => { scanner.stop(); syncUi.stopTimer(); });
   dlg.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
     e.preventDefault();

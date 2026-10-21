@@ -116,9 +116,12 @@ class H(BaseHTTPRequestHandler):
         if fn == 'pair_offer':
             i = b.get('p_id'); blob = b.get('p_blob')
             if not isinstance(i, str) or not re.fullmatch(r'[0-9a-f]{64}', i) or not isinstance(blob, str) or len(blob.encode()) > 400: raise ValueError('jumelage invalide')
-            mine = sorted([(x['created'], k) for k, x in S.pairings.items() if x['account'] == a and not x['taken'] and x['expires'] > time.time()])
-            for _, k in mine[:max(0, len(mine) - 4)]: del S.pairings[k]
+            for k in [k for k, x in S.pairings.items() if x['account'] == a and not x['taken']]: del S.pairings[k]
             S.pairings.setdefault(i, {'account': a, 'blob': blob, 'created': time.time(), 'expires': time.time() + S.pair_ttl, 'taken': None})
+            return self.reply(204)
+        if fn == 'pair_cancel':
+            x = S.pairings.get(b.get('p_id'))
+            if x and x['account'] == a and not x['taken']: del S.pairings[b['p_id']]
             return self.reply(204)
         if fn == 'pair_status':
             x = S.pairings.get(b.get('p_id'))

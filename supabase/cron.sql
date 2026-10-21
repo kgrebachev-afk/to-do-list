@@ -31,6 +31,7 @@ select cron.schedule('todo-cron-cleanup', '17 3 * * *', $job$
   delete from public.reminders where sent_at < now() - interval '30 days';
   delete from public.accounts where last_seen < now() - interval '400 days';
   delete from public.pairings where expires_at < now() - interval '1 hour';
+  delete from public.items where deleted and modified_at < now() - interval '365 days';
   delete from private.creations where at < now() - interval '1 day';
   delete from public.retired_accounts where retired_at < now() - interval '400 days';
 $job$);

@@ -85,6 +85,7 @@ try:
     TOKEN = tok_txt.replace('-', '')
     CODE = A.evaluate("window.__odj.cloud.st.code")
     check('QR code à usage unique : code de 13 caractères au format XXXX-XXXX-XXXX-X', re.fullmatch(r'[0-9A-Z]{4}(-[0-9A-Z]{4}){2}-[0-9A-Z]', tok_txt) is not None, tok_txt)
+    A.locator('#pairInfo', has_text='expire dans').wait_for(timeout=8000)
     check('QR code affiché, valable 10 minutes', A.locator('#syncQr svg').count() == 1 and 'expire dans 10 minutes' in A.locator('#pairInfo').inner_text(), A.locator('#pairInfo').inner_text())
     check('le code de secours n\'est pas affiché à l\'écran', CODE not in A.locator('#syncBody').inner_text().replace('-', ''))
     A.screenshot(path=str(OUT / '94-sync-qr.png'))
@@ -166,11 +167,19 @@ try:
     A.screenshot(path=str(OUT / '94d-qr-expired.png'))
     S.pair_ttl = 600
     A.click('#qrState [data-sync="show"]'); A.locator('#pairCodeTxt').wait_for(state='visible', timeout=8000)
+    A.locator('#pairInfo', has_text='expire dans').wait_for(timeout=8000)
     check('… nouveau QR code d\'un clic', 'expire dans' in A.locator('#pairInfo').inner_text())
     A.click('#syncFoot [data-sync="cancel"]')
 
     # --- lien (QR scanné avec l'appareil photo) : confirmation, puis connecté ; le code disparaît de l'adresse
-    T2 = fresh_token(); A.click('#syncFoot [data-sync="cancel"]')
+    # QR code fermé sans avoir servi : annulé aussitôt (une photo prise entre-temps ne sert plus à rien)
+    T1 = fresh_token(); A.click('#syncFoot [data-sync="cancel"]'); A.wait_for_timeout(500)
+    X = phone_ctx(b); XP = X.new_page(); XP.goto(URL); XP.wait_for_timeout(400)
+    XP.evaluate("window.__odj.syncUi.open('enter')"); XP.fill('#syncCodeInput', T1); XP.click('[data-sync="join-typed"]')
+    XP.locator('#syncMsg').wait_for(state='visible', timeout=8000)
+    check('QR code fermé sans servir : annulé, inutilisable ensuite', 'déjà servi' in XP.locator('#syncMsg').inner_text() and not XP.evaluate("window.__odj.cloud.isOn()"))
+    X.close()
+    T2 = fresh_token()
     L = phone_ctx(b); LP = L.new_page(); LP.on('pageerror', lambda e: errs.append('LIEN ' + str(e)))
     LP.goto(URL + '#jumelage=' + T2); LP.wait_for_timeout(600)
     check('lien : demande de confirmation avec mise en garde', LP.locator('#dlgSyncTitle', has_text='Connecter cet appareil').is_visible() and 'pas créé cette liste vous-même' in LP.locator('#syncBody').inner_text())
@@ -182,10 +191,10 @@ try:
     LP.click('[data-sync="join-pending"]'); LP.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
     wait_js(LP, "window.__odj.state().tasks.length === 3", 10000)
     check('lien : appareil connecté, tâches reçues', LP.evaluate("window.__odj.cloud.isOn()") and len(titles(LP)) == 3)
-    L.close()
+    L.close(); A.click('#syncFoot [data-sync="cancel"]')
 
     # --- iPhone dans Safari (pas installée) : explique l'installation sans consommer le QR code
-    T3 = fresh_token(); A.click('#syncFoot [data-sync="cancel"]')
+    T3 = fresh_token()
     I = phone_ctx(b, ua=IPHONE_UA); IP = I.new_page(); IP.goto(URL + '#jumelage=' + T3); IP.wait_for_timeout(600)
     check('iPhone (Safari) : explique l\'installation sur l\'écran d\'accueil', IP.locator('#dlgSyncTitle', has_text="Installer sur l'iPhone").is_visible() and 'écran d\'accueil' in IP.locator('#syncBody').inner_text())
     check('… le QR code n\'est pas encore consommé', any(not x['taken'] for x in S.pairings.values()))
@@ -195,10 +204,10 @@ try:
     IP.click('[data-sync="join-pending"]'); IP.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
     wait_js(IP, "window.__odj.state().tasks.length === 3", 10000)
     check('iPhone : « Connecter Safari » fonctionne aussi', len(titles(IP)) == 3)
-    I.close()
+    I.close(); A.click('#syncFoot [data-sync="cancel"]')
 
     # --- scanner intégré : caméra factice qui filme le QR code de l'écran du PC
-    fresh_token(); qr_png = A.locator('#syncQr').screenshot(); A.click('#syncFoot [data-sync="cancel"]')
+    fresh_token(); qr_png = A.locator('#syncQr').screenshot()
     y4m = SCR / 'qr.y4m'; write_y4m(qr_png, y4m)
     b2 = p.chromium.launch(channel='chromium', args=['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', f'--use-file-for-fake-video-capture={y4m}'])
     C = phone_ctx(b2, permissions=['camera']); CP = C.new_page(); CP.on('pageerror', lambda e: errs.append('SCAN ' + str(e)))
@@ -214,7 +223,7 @@ try:
     CP.click('[data-sync="join-pending"]'); CP.locator('#dlgSyncTitle', has_text='Ajouter un appareil').wait_for(timeout=15000)
     wait_js(CP, "window.__odj.cloud.isOn() && !window.__odj.cloud.running", 15000)
     check('scanner : appareil connecté', len(titles(CP)) == 3, titles(CP))
-    C.close()
+    C.close(); A.click('#syncFoot [data-sync="cancel"]')
     # fenêtre fermée (Échap) pendant que la caméra s'ouvre : elle doit s'éteindre quand même
     REC = "(() => { const g = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices); window.__streams = []; navigator.mediaDevices.getUserMedia = async (c) => { await new Promise(r => setTimeout(r, 700)); const s = await g(c); window.__streams.push(s); return s; }; })();"
     C = phone_ctx(b2, permissions=['camera']); C.add_init_script(REC); EP = C.new_page(); EP.goto(URL); EP.wait_for_timeout(500)
@@ -223,7 +232,7 @@ try:
     check('scanner fermé pendant l\'ouverture de la caméra : caméra éteinte', not EP.locator('#dlgSync').is_visible() and live == 0 and EP.evaluate("window.__odj.scanner.stream === null"), live)
     C.close(); b2.close()
     # appareil qui a déjà des tâches : elles rejoignent la liste après confirmation
-    T4 = fresh_token(); A.click('#syncFoot [data-sync="cancel"]')
+    T4 = fresh_token()
     TPc = phone_ctx(b); TP = TPc.new_page(); TP.on('pageerror', lambda e: errs.append('TP ' + str(e))); TP.goto(URL); TP.wait_for_timeout(500)
     TP.fill('#qaInput', 'Tâche perso du téléphone'); TP.press('#qaInput', 'Enter'); TP.wait_for_timeout(300)
     TP.evaluate("window.__odj.syncUi.open('enter')"); TP.fill('#syncCodeInput', T4); TP.click('[data-sync="join-typed"]')
@@ -234,7 +243,7 @@ try:
     check('… puis connecté, sa tâche ajoutée à la liste', len(titles(TP)) == 4 and any(i['id'] == TP.evaluate("window.__odj.state().tasks.find(t => t.title === 'Tâche perso du téléphone').id") for i in server()['items']), titles(TP))
     tp_id = TP.evaluate("window.__odj.state().tasks.find(t => t.title === 'Tâche perso du téléphone').id")
     TP.evaluate(f"window.__odj.select('{tp_id}')"); TP.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Delete', bubbles: true}))"); TP.wait_for_timeout(2400)
-    TPc.close()
+    TPc.close(); A.click('#syncFoot [data-sync="cancel"]')
     # affichée dans un cadre d'un autre site : refuse de s'afficher
     FR = b.new_context(); FP = FR.new_page(); FP.set_content(f'<iframe src="{URL}" width="600" height="400"></iframe>'); FP.wait_for_timeout(1500)
     fr = FP.frames[1]

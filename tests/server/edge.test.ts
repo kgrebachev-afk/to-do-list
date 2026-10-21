@@ -37,6 +37,7 @@ const rest = Deno.serve({ port: 9001, onListen() {} }, async (req) => {
   if (name === 'drop_sub') { dropped.push(a.p_endpoint); return new Response(''); }
   if (name === 'mark_subs_ok') { okMarked.push(...a.p_endpoints); return new Response(''); }
   if (name === 'mark_sent') { markedSent.push(...a.p_tasks); return new Response(''); }
+  if (name === 'release_claims') return new Response('');
   return new Response('?', { status: 404 });
 });
 // --- faux service push (HTTPS)

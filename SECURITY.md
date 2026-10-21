@@ -13,7 +13,8 @@ Merci de ne pas ouvrir de ticket public. Utilisez **Security → Report a vulner
   (Supabase) ne voit que des données chiffrées, des identifiants aléatoires et des dates. La clé de
   chiffrement est dérivée du code de synchronisation (95 bits aléatoires), qui ne quitte jamais
   l'appareil ; le serveur n'en connaît que l'empreinte d'une clé d'accès dérivée.
-- **Ajout d'un appareil** : QR code à usage unique, valable 10 minutes. Il permet seulement de récupérer
+- **Ajout d'un appareil** : QR code à usage unique, valable 10 minutes, annulé dès qu'il quitte l'écran
+  (un seul valide à la fois). Il permet seulement de récupérer
   une fois le code de synchronisation, déposé chiffré par l'appareil qui l'affiche. L'appareil qui a montré
   le QR code indique quand il a servi. Une confirmation montrant le contenu de la liste est toujours
   demandée avant de connecter un appareil.
@@ -21,7 +22,7 @@ Merci de ne pas ouvrir de ticket public. Utilisez **Security → Report a vulner
   jamais à transmettre. En cas de doute : Réglages → **Changer de code** (l'ancien code est retiré
   définitivement côté serveur et ne peut plus être recréé).
 - **Serveur** : aucun accès direct aux tables ; uniquement des fonctions qui vérifient la clé d'accès,
-  avec quotas (10 Mo et 10 000 éléments par liste, 6 appareils, 300 rappels), garde-fou global
+  avec quotas (10 Mo et 20 000 éléments par liste, 6 appareils, 300 rappels), garde-fou global
   d'espace, limitation des créations par adresse, validation stricte des abonnements aux notifications.
 - **Page** : CSP stricte (script de la page autorisé par empreinte, seuls `jsqr.js` — avec empreinte
   SRI — et `sw.js` de ce site autorisés), refus de s'afficher dans un cadre, aucun script tiers.
@@ -38,7 +39,13 @@ Merci de ne pas ouvrir de ticket public. Utilisez **Security → Report a vulner
   dédié).
 - **Disponibilité** : un attaquant déterminé peut saturer l'offre gratuite de Supabase (création de
   listes en masse). Effet : synchronisation suspendue, sans fuite de données ; l'application continue
-  de fonctionner hors ligne.
+  de fonctionner hors ligne. Remise en route : supprimer les listes indésirables, puis
+  `VACUUM FULL public.items, public.reminders;` dans l'éditeur SQL (la taille de la base ne diminue
+  pas d'elle-même, le garde-fou bloque les écritures au-delà de 380 Mo).
+- **Droits par défaut** : `schema.sql` empêche que les futures tables du schéma `public` de ce projet
+  Supabase soient ouvertes à l'API sans le vouloir. Pour revenir au comportement standard de Supabase :
+  `alter default privileges in schema public grant all on tables to anon, authenticated;`
+  (idem `on sequences`).
 - **Fichier de sauvegarde** : copie en clair de la liste. Le garder dans un dossier personnel.
 
 ## En cas d'incident (version piégée publiée, compte compromis)

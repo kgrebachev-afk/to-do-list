@@ -105,17 +105,22 @@ create table if not exists public.reminders (
 );
 create index if not exists reminders_due on public.reminders (fire_at) where sent_at is null;
 alter table public.reminders add column if not exists claimed_at timestamptz;
--- tailles mesurées en octets (un caractère peut en occuper 4)
+-- tailles mesurées en octets (un caractère peut en occuper 4) ; les lignes existantes trop grandes
+-- (version précédente) sont nettoyées ou tolérées pour que la mise à jour ne puisse pas échouer
+delete from private.creations where octet_length(ip) > 64;
+delete from public.push_subs where p256dh !~ '^B[A-Za-z0-9_-]{86}={0,1}$' or auth !~ '^[A-Za-z0-9_-]{22}={0,2}$' or octet_length(endpoint) > 1000;
+update public.push_subs set label = left(label, 40) where label is not null and octet_length(label) > 160;
+update public.push_subs set label = null where label is not null and octet_length(label) > 160;
 alter table public.items drop constraint if exists items_data_check;
 alter table public.items drop constraint if exists items_data_bytes;
-alter table public.items add constraint items_data_bytes check (data is null or octet_length(data) <= 200000);
+alter table public.items add constraint items_data_bytes check (data is null or octet_length(data) <= 200000) not valid;
 alter table public.reminders drop constraint if exists reminders_payload_check;
 alter table public.reminders drop constraint if exists reminders_payload_bytes;
-alter table public.reminders add constraint reminders_payload_bytes check (octet_length(payload) < 3000);
+alter table public.reminders add constraint reminders_payload_bytes check (octet_length(payload) < 3000) not valid;
 alter table public.push_subs drop constraint if exists push_subs_sizes;
-alter table public.push_subs add constraint push_subs_sizes check (octet_length(endpoint) <= 1000 and octet_length(p256dh) <= 100 and octet_length(auth) <= 40 and octet_length(coalesce(label, '')) <= 160);
+alter table public.push_subs add constraint push_subs_sizes check (octet_length(endpoint) <= 1000 and octet_length(p256dh) <= 100 and octet_length(auth) <= 40 and octet_length(coalesce(label, '')) <= 160) not valid;
 alter table private.creations drop constraint if exists creations_ip;
-alter table private.creations add constraint creations_ip check (octet_length(ip) <= 64);
+alter table private.creations add constraint creations_ip check (octet_length(ip) <= 64) not valid;
 
 -- QR codes à usage unique (10 minutes) : le code de synchronisation y est déposé chiffré avec une clé
 -- tirée du QR code lui-même ; id = empreinte dérivée du QR code. Le serveur ne peut rien en lire.
@@ -139,9 +144,7 @@ alter table public.pairings  enable row level security;
 revoke all on public.accounts, public.retired_accounts, public.items, public.push_subs, public.reminders, public.pairings from public, anon, authenticated;
 alter default privileges in schema public revoke all on tables from anon, authenticated;
 alter default privileges in schema public revoke all on sequences from anon, authenticated;
-alter default privileges in schema public revoke execute on functions from anon, authenticated;
--- (le droit d'exécution « public » des fonctions ne peut être retiré que globalement, pas par schéma)
-alter default privileges revoke execute on functions from public;
+-- (les fonctions reçoivent chacune leurs droits explicitement ci-dessous)
 
 -- Garde-fou global : au-delà, plus aucune écriture (l'offre gratuite plafonne la base à 500 Mo).
 create or replace function private.guard_space()
@@ -238,12 +241,18 @@ begin
   perform 1 from public.accounts where id = a for update;
   perform private.guard_space();
   delete from public.pairings where expires_at < now() - interval '1 hour';
-  -- 5 QR codes valides au plus par liste : les plus anciens sont annulés
-  delete from public.pairings where id in (
-    select q.id from public.pairings q where q.account = a and q.taken_at is null and q.expires_at > now()
-     order by q.created_at desc offset 4);
+  -- un seul QR code valide à la fois par liste : afficher un nouveau QR code annule le précédent
+  delete from public.pairings q where q.account = a and q.taken_at is null;
   insert into public.pairings (id, account, blob, expires_at) values (p_id, a, p_blob, now() + interval '10 minutes')
   on conflict (id) do nothing;
+end $$;
+
+-- Annule un QR code non utilisé (fenêtre fermée).
+create or replace function public.pair_cancel(p_key text, p_id text)
+returns void language plpgsql security definer set search_path = pg_catalog, public as $$
+declare a text := private.account_of(p_key);
+begin
+  delete from public.pairings q where q.id = p_id and q.account = a and q.taken_at is null;
 end $$;
 
 create or replace function public.pair_take(p_id text)
@@ -315,9 +324,13 @@ begin
   end if;
   perform 1 from public.accounts where id = a for update; -- un envoi à la fois par liste : quotas fiables
   perform private.guard_space();
-  -- 10 000 éléments et 10 Mo par liste (une liste réelle en occupe quelques centaines de Ko)
-  if (select count(*) from public.items where account = a) + jsonb_array_length(p_rows) > 10000
-     or (select coalesce(sum(octet_length(data)), 0) from public.items where account = a)
+  -- 20 000 éléments et 10 Mo par liste (une liste réelle en occupe quelques centaines de Ko) ;
+  -- une mise à jour ne compte pas comme un nouvel élément, et remplace la taille de l'ancienne version
+  if (select count(*) from public.items where account = a)
+       + (select count(distinct r->>'id') from jsonb_array_elements(p_rows) r
+           where not exists (select 1 from public.items i where i.account = a and i.id = r->>'id')) > 20000
+     or (select coalesce(sum(octet_length(i.data)), 0) from public.items i
+          where i.account = a and i.id not in (select r->>'id' from jsonb_array_elements(p_rows) r))
         + (select coalesce(sum(octet_length(r->>'data')), 0) from jsonb_array_elements(p_rows) r) > 10000000 then
     raise exception 'limite de stockage atteinte' using errcode = 'P0001';
   end if;
@@ -410,8 +423,8 @@ $$;
 
 revoke execute on all functions in schema private from public, anon, authenticated;
 revoke all on all tables in schema private from public, anon, authenticated;
-revoke execute on function public.pair_offer(text, text, text), public.pair_take(text), public.pair_status(text, text) from public;
-grant execute on function public.pair_offer(text, text, text), public.pair_take(text), public.pair_status(text, text) to anon, authenticated;
+revoke execute on function public.pair_offer(text, text, text), public.pair_take(text), public.pair_status(text, text), public.pair_cancel(text, text) from public;
+grant execute on function public.pair_offer(text, text, text), public.pair_take(text), public.pair_status(text, text), public.pair_cancel(text, text) to anon, authenticated;
 revoke execute on function public.create_account(text), public.account_info(text), public.pull_items(text, timestamptz, text), public.get_items(text, text[]),
   public.push_items(text, jsonb), public.set_reminders(text, jsonb), public.register_push(text, text, text, text, text),
   public.unregister_push(text, text), public.delete_account(text), public.vapid_public_key() from public;
@@ -460,6 +473,12 @@ returns void language sql security definer set search_path = pg_catalog, public 
     from unnest(p_users, p_tasks) as u(a, t)
    where r.account = u.a and r.task_id = u.t and r.sent_at is null;
 $$;
+create or replace function public.release_claims(p_users text[], p_tasks text[])
+returns void language sql security definer set search_path = pg_catalog, public as $$
+  update public.reminders r set claimed_at = null
+    from unnest(p_users, p_tasks) as u(a, t)
+   where r.account = u.a and r.task_id = u.t and r.sent_at is null;
+$$;
 create or replace function public.mark_subs_ok(p_endpoints text[])
 returns void language sql security definer set search_path = pg_catalog, public as $$
   update public.push_subs set last_ok = now() where endpoint = any(p_endpoints);
@@ -479,10 +498,10 @@ returns void language sql security definer set search_path = pg_catalog, public 
 $$;
 
 revoke execute on function public.todo_secret(text), public.todo_init_secret(text, text), public.claim_due_reminders(),
-  public.mark_sent(text[], text[]), public.mark_subs_ok(text[]),
+  public.mark_sent(text[], text[]), public.mark_subs_ok(text[]), public.release_claims(text[], text[]),
   public.subs_for(text[]), public.drop_sub(text), public.mark_sub_ok(text) from public, anon, authenticated;
 grant execute on function public.todo_secret(text), public.todo_init_secret(text, text), public.claim_due_reminders(),
-  public.mark_sent(text[], text[]), public.mark_subs_ok(text[]),
+  public.mark_sent(text[], text[]), public.mark_subs_ok(text[]), public.release_claims(text[], text[]),
   public.subs_for(text[]), public.drop_sub(text), public.mark_sub_ok(text) to service_role;
 
 -- Les listes abandonnées (aucun appareil depuis un an) sont effacées par le ménage quotidien (cron.sql).

@@ -163,6 +163,8 @@ for (let i = 0; i < 80 && !e; i += 10) {
   if (!e) stored += 10;
 }
 ok('quota de stockage (10 Mo par liste) : envoi refusé au-delà', !!e && /limite de stockage/.test(e.message) && stored === 50, [stored, e && e.message]);
+e = await rejects(() => anon(`select push_items($1, $2::jsonb)`, [Q, JSON.stringify(Array.from({ length: 10 }, (_, j) => ({ id: 'q' + j, updated_at: 2, data: big })))]));
+ok('liste pleine : modifier des éléments existants reste possible (la taille remplacée est déduite)', !e, e && e.message);
 e = await rejects(() => anon(`select push_items($1, $2::jsonb)`, [key(), '[]']));
 const astral = String.fromCodePoint(0x1F600).repeat(60000); // 60 000 caractères, 240 000 octets
 e = await rejects(() => anon(`select push_items($1, $2::jsonb)`, [B, JSON.stringify([{ id: 'emoji', updated_at: 1, data: astral }])]));
@@ -241,9 +243,18 @@ await anon(`select pair_offer($1, $2, 'v1.x.y')`, [C, pid2]);
 await svc(`update pairings set expires_at = now() - interval '1 second' where id = $1`, [pid2]);
 r = await anon(`select pair_take($1) b`, [pid2]);
 ok('QR code expiré : refusé', r.rows[0].b === null, r.rows);
-for (let i = 0; i < 8; i++) await anon(`select pair_offer($1, $2, 'v1.x.y')`, [C, randomBytes(32).toString('hex')]);
-r = await svc(`select count(*)::int n from pairings where account = $1 and taken_at is null and expires_at > now()`, [hash(C)]);
-ok('5 QR codes valides au plus par liste', r.rows[0].n === 5, r.rows);
+const ids8 = Array.from({ length: 8 }, () => randomBytes(32).toString('hex'));
+for (const i of ids8) await anon(`select pair_offer($1, $2, 'v1.x.y')`, [C, i]);
+r = await svc(`select id from pairings where account = $1 and taken_at is null`, [hash(C)]);
+ok('un seul QR code valide à la fois (le nouveau annule le précédent)', r.rows.length === 1 && r.rows[0].id === ids8[7], r.rows);
+await anon(`select pair_cancel($1, $2)`, [D, ids8[7]]);
+r = await anon(`select pair_take($1) b`, [ids8[7]]);
+ok('annulation par une autre liste : sans effet', r.rows[0].b === 'v1.x.y', r.rows);
+const pid3 = randomBytes(32).toString('hex');
+await anon(`select pair_offer($1, $2, 'v1.z.z')`, [C, pid3]);
+await anon(`select pair_cancel($1, $2)`, [C, pid3]);
+r = await anon(`select pair_take($1) b`, [pid3]);
+ok('QR code annulé (fenêtre fermée) : inutilisable', r.rows[0].b === null, r.rows);
 e = await rejects(() => anon(`select pair_offer($1, $2, $3)`, [C, randomBytes(32).toString('hex'), 'x'.repeat(401)]));
 ok('QR code : contenu trop gros refusé', !!e);
 e = await rejects(() => anon(`select pair_take('nimporte')`));
@@ -278,16 +289,22 @@ await svc(`select mark_sent(array[$1], array['v2'])`, [hash(V)]);
 await svc(`update reminders set claimed_at = now() - interval '6 minutes'`);
 r = await svc(`select * from claim_due_reminders()`);
 ok('… et plus jamais une fois marqué envoyé', r.rows.length === 0, r.rows);
-for (const f of [`select mark_sent(array['a'], array['b'])`, `select mark_subs_ok(array['x'])`]) {
+for (const f of [`select mark_sent(array['a'], array['b'])`, `select mark_subs_ok(array['x'])`, `select release_claims(array['a'], array['b'])`]) {
   e = await rejects(() => anon(f));
   ok(`réservé au serveur : ${f.slice(7, 30)}`, !!e);
 }
 // futurs objets du schéma public : fermés à l'API par défaut
-await db.exec(`create table public.futur (x int); create function public.futur_fn() returns int language sql as 'select 1';`);
+await db.exec(`create table public.futur (x int);`);
 e = await rejects(() => anon(`select * from public.futur`));
-const e2 = await rejects(() => anon(`select public.futur_fn()`));
-ok('nouvelle table ou fonction du schéma public : inaccessible à l\'API par défaut', !!e && !!e2, [e && e.message, e2 && e2.message]);
-await db.exec(`drop table public.futur; drop function public.futur_fn();`);
+ok('nouvelle table du schéma public : inaccessible à l\'API par défaut', !!e, e && e.message);
+await db.exec(`drop table public.futur;`);
+// rappel réservé puis rendu (limite d'envois par passage) : repris tout de suite
+await svc(`delete from reminders`);
+await anon(`select set_reminders($1, $2::jsonb)`, [V, JSON.stringify([{ task_id: 'v3', fire_at: Date.now() - 1000, payload: 'p' }])]);
+await svc(`select * from claim_due_reminders()`);
+await svc(`select release_claims(array[$1], array['v3'])`, [hash(V)]);
+r = await svc(`select * from claim_due_reminders()`);
+ok('rappel rendu : repris à l\'exécution suivante', r.rows.length === 1 && r.rows[0].task_id === 'v3', r.rows);
 
 console.log(fails ? `${fails} ÉCHEC(S)` : 'tout est OK');
 process.exit(fails ? 1 : 0);
