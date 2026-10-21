@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="To do list">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'sha256-ItFZUECZIGUVnN7DG+i0Ho3NAuYjlx2Po00Bmiy9nAk='; worker-src 'self'; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src https://mkihhdkjwnjklcnbdpvg.supabase.co; form-action 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://kgrebachev-afk.github.io/to-do-list/jsqr.js 'sha256-RMDczUtTCbNxyOimeA0h0o2CZ/DNDmBMEH9UODcN06Y='; worker-src https://kgrebachev-afk.github.io/to-do-list/sw.js; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src https://mkihhdkjwnjklcnbdpvg.supabase.co; form-action 'none'; base-uri 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0C6A74">
 <link rel="manifest" href="manifest.webmanifest">
@@ -15,7 +15,7 @@
 <title>To do list</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230C6A74'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <!--
-  To do list — version Bureau 1.6.0
+  To do list — version Bureau 1.7.0
   Fichier autonome : aucune connexion réseau, aucune installation.
   Polices Barlow et Barlow Semi Condensed (Jeremy Tribby), SIL Open Font License 1.1.
 -->
@@ -783,12 +783,16 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
 .qrWrap { position: relative; }
 .qrWrap .qr { overflow: hidden; }
 .qrWrap.masked .qr svg { filter: blur(14px); opacity: .35; }
-.qrMask { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font: 600 15px/1.2 var(--ff-c); cursor: pointer; }
-.qrMask[hidden] { display: none; }
-.qrMask .ic { width: 26px; height: 26px; color: var(--accent); }
-.qrMask span { padding: 5px 10px; border-radius: 999px; background: var(--raise); box-shadow: 0 1px 3px rgba(0, 0, 0, .15); }
-.qrMask:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.syncCode.masked { filter: blur(5px); user-select: none; }
+.qrState { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; text-align: center; font: 600 15px/1.3 var(--ff-c); color: var(--ink); }
+.qrState.gone { display: none; }
+.qrState .ic { width: 28px; height: 28px; color: var(--accent); }
+.qrState.ok .ic { color: var(--accent); }
+.qrState > span:not(.spin) { padding: 5px 12px; border-radius: 999px; background: var(--raise); box-shadow: 0 1px 3px rgba(0, 0, 0, .15); }
+.qrState .btn { box-shadow: 0 1px 3px rgba(0, 0, 0, .15); }
+.qrState .spin { margin: 0; }
+.secretLink { margin-top: 14px; }
+.secretLink .linkBtn .ic { width: 15px; height: 15px; vertical-align: -3px; margin-right: 4px; }
+.syncCode.masked { filter: blur(6px); user-select: none; }
 .listInfo { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); font-size: 14.5px; color: var(--ink-2); }
 .listInfo .ic { width: 18px; height: 18px; flex: none; color: var(--accent); margin-top: 1px; }
 .listInfo strong { color: var(--ink); }
@@ -992,7 +996,7 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
       </div>
     </section>
 
-    <p class="about">Version 1.6.0. Vos tâches restent sur cet ordinateur : l'application ne se connecte à aucun serveur.</p>
+    <p class="about">Version 1.7.0. Vos tâches restent sur cet ordinateur : l'application ne se connecte à aucun serveur.</p>
   </div>
 </dialog>
 
@@ -1107,7 +1111,7 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
 const APP = 'ordre-du-jour'; // identifiant interne du format de données (inchangé pour compatibilité)
 const APP_NAME = 'To do list';
 const SCHEMA = 1;
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 const KEY_DATA = 'odj.data.v1';
 const KEY_SNAPS = 'odj.snapshots.v1';
 const KEY_BACKUP = 'odj.backup.v1';
@@ -1144,6 +1148,7 @@ const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const isNarrow = () => matchMedia('(max-width: 860px)').matches;
 
+const validId = (v) => typeof v === 'string' && /^[A-Za-z0-9:_-]{1,80}$/.test(v) && v !== '__settings'; // 80 : limite du serveur
 function uid() {
   try { if (crypto.randomUUID) return crypto.randomUUID(); } catch (e) { /* contexte non sécurisé */ }
   const b = crypto.getRandomValues(new Uint8Array(16));
@@ -1419,11 +1424,11 @@ function normTask(t) {
   const now = Date.now();
   const done = !!t.done;
   return {
-    id: typeof t.id === 'string' && t.id ? t.id : uid(),
+    id: validId(t.id) ? t.id : uid(),
     title: str(t.title).slice(0, 500),
     notes: str(t.notes).slice(0, 100000),
     steps: Array.isArray(t.steps)
-      ? t.steps.filter((s) => s && typeof s === 'object').slice(0, 500).map((s) => ({ id: typeof s.id === 'string' && s.id ? s.id : uid(), text: str(s.text), done: !!s.done }))
+      ? t.steps.filter((s) => s && typeof s === 'object').slice(0, 500).map((s) => ({ id: validId(s.id) ? s.id : uid(), text: str(s.text).slice(0, 1000), done: !!s.done }))
       : [],
     done,
     doneAt: done ? (num(t.doneAt) ?? now) : null,
@@ -1432,8 +1437,8 @@ function normTask(t) {
     repeat: normRepeat(t.repeat),
     createdAt: num(t.createdAt) ?? now,
     updatedAt: num(t.updatedAt) ?? now,
-    spawnedId: typeof t.spawnedId === 'string' ? t.spawnedId : null,
-    seriesId: typeof t.seriesId === 'string' && t.seriesId ? t.seriesId : null,
+    spawnedId: validId(t.spawnedId) ? t.spawnedId : null,
+    seriesId: validId(t.seriesId) ? t.seriesId : null,
     remind: normRemind(t.remind),
     matrix: normMatrix(t.matrix),
   };
@@ -1463,7 +1468,7 @@ function normData(d) {
   const deleted = {};
   const limit = Date.now() - 60 * 86400000;
   if (d.deleted && typeof d.deleted === 'object') {
-    for (const [id, at] of Object.entries(d.deleted)) if (typeof at === 'number' && at > limit && !seen.has(id)) deleted[id] = at;
+    for (const [id, at] of Object.entries(d.deleted)) if (validId(id) && typeof at === 'number' && at > limit && !seen.has(id)) deleted[id] = at;
   }
   return { tasks, settings, savedAt: num(d.savedAt) ?? 0, deleted, settingsAt: num(d.settingsAt) ?? 0 };
 }
@@ -2579,13 +2584,15 @@ function autosize(ta) {
   ta.style.height = 'auto';
   ta.style.height = `${ta.scrollHeight + 2}px`;
 }
-const RE_URL = /\bhttps?:\/\/[^\s<>"']+/gi;
-const RE_PATH = /(?:\b[A-Za-z]:\\|\\\\[^\s\\/:*?"<>|]+\\)[^\r\n"<>|*?]*/g;
+const RE_URL = /\bhttps?:\/\/[^\s<>"']{1,2048}/gi;
+const RE_PATH = /(?:\b[A-Za-z]:\\|\\\\[^\s\\/:*?"<>|]{1,255}\\)[^\r\n"<>|*?]{0,1024}/g;
 function detectLinks(text) {
   const out = [];
   const seen = new Set();
   const push = (kind, v) => {
-    v = v.replace(/[\s.,;:)\]]+$/, '');
+    let e = v.length;
+    while (e && ' \t\r\n.,;:)]'.includes(v[e - 1])) e--; // sans expression régulière (temps linéaire)
+    v = v.slice(0, e);
     if (v.length < 4 || seen.has(v)) return;
     seen.add(v); out.push({ kind, v });
   };
@@ -3141,7 +3148,7 @@ function cardHTML(t, isTest = false) {
 
 /* ---------- Outlook : fichier .ics avec rappel (fonctionne même navigateur fermé) ---------- */
 const ICS_DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
-function icsEsc(s) { return String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n'); }
+function icsEsc(s) { return String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r\n|\r|\n/g, '\\n').replace(/[\x00-\x08\x0B-\x1F\x7F]/g, ''); }
 function icsFold(line) {
   // lignes de 75 octets maximum (RFC 5545), coupées sans casser un caractère UTF-8
   const enc = new TextEncoder();
@@ -3205,7 +3212,7 @@ function icsEvent(t, tz, notes) {
   if (t.notes.trim()) desc.push('', t.notes.trim());
   desc.push('', `Créé depuis ${APP_NAME}.`);
   return ['BEGIN:VEVENT',
-    `UID:${t.seriesId || t.id}@ordre-du-jour`,
+    `UID:${icsEsc(t.seriesId || t.id)}@ordre-du-jour`,
     `DTSTAMP:${icsUtc(Date.now())}`,
     `SEQUENCE:${Math.floor(Date.now() / 1000) % 2000000000}`,
     `DTSTART${dt(start, r.time)}`,
@@ -4187,13 +4194,6 @@ const syncCode = {
   },
   valid(c) { return /^[0-9A-HJKMNP-TV-Z]{20}$/.test(c) && this.check(c.slice(0, 19)) === c[19]; },
   format(c) { return c.match(/.{1,5}/g).join('-'); },
-  /* Code contenu dans un texte scanné : lien de jumelage (#lien=…) ou code seul. */
-  fromText(text) {
-    const t = String(text || '').trim();
-    const m = t.match(/[#&?]lien=([0-9A-Za-z-]{20,30})/);
-    const c = this.normalize(m ? m[1] : t);
-    return this.valid(c) ? c : null;
-  },
   async keys(code) {
     const base = await crypto.subtle.importKey('raw', enc8.encode(code), 'HKDF', false, ['deriveBits', 'deriveKey']);
     const salt = enc8.encode('to-do-list/sync/v2');
@@ -4203,8 +4203,50 @@ const syncCode = {
     return { access, key };
   },
 };
+/* Code de connexion à usage unique (QR code) : 12 caractères aléatoires + 1 de contrôle (60 bits),
+   valable 10 minutes. Il ne donne pas accès à la liste : il permet seulement de récupérer, une fois,
+   le code de synchronisation déposé chiffré par l'appareil qui affiche le QR code. */
+const pairCode = {
+  create() {
+    const r = crypto.getRandomValues(new Uint8Array(12));
+    const body = Array.from(r, (x) => CODE_ALPHABET[x & 31]).join('');
+    return body + syncCode.check(body);
+  },
+  valid(c) { return /^[0-9A-HJKMNP-TV-Z]{13}$/.test(c) && syncCode.check(c.slice(0, 12)) === c[12]; },
+  format(c) { return c.match(/.{1,4}/g).join('-'); },
+  async keys(token) {
+    const base = await crypto.subtle.importKey('raw', enc8.encode(token), 'HKDF', false, ['deriveBits', 'deriveKey']);
+    const salt = enc8.encode('to-do-list/jumelage/v1');
+    const id = hexOf(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: enc8.encode('id') }, base, 256));
+    const key = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: enc8.encode('cle') },
+      base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    return { id, key };
+  },
+};
 function appBaseUrl() { return location.origin + location.pathname.replace(/index\.html$/, ''); }
-function pairUrl(code) { return `${appBaseUrl()}#lien=${code}`; }
+function pairUrl(token) { return `${appBaseUrl()}#jumelage=${token}`; }
+/* Texte scanné ou saisi : lien de CETTE application uniquement, ou code seul.
+   → { kind: 'token', v } (QR code à usage unique) | { kind: 'code', v } (code de secours) | null */
+function parsePairing(text) {
+  const t = String(text || '').trim();
+  if (t.length > 300) return null;
+  let raw = t;
+  if (/^https?:/i.test(t)) {
+    let u; try { u = new URL(t); } catch (e) { return null; }
+    if (u.origin + u.pathname.replace(/index\.html$/, '') !== appBaseUrl()) return null; // lien d'un autre site : ignoré
+    const m = u.hash.match(/^#(jumelage|lien)=([0-9A-Za-z-]{13,30})$/);
+    if (!m) return null;
+    raw = m[2];
+  } else if (/[#=]/.test(t)) {
+    const m = t.match(/^#?(jumelage|lien)=([0-9A-Za-z-]{13,30})$/);
+    if (!m) return null;
+    raw = m[2];
+  }
+  const c = syncCode.normalize(raw);
+  if (pairCode.valid(c)) return { kind: 'token', v: c };
+  if (syncCode.valid(c)) return { kind: 'code', v: c };
+  return null;
+}
 
 /* Données associées au chiffrement : lient le contenu à son identifiant, à sa date et à sa nature
    (une suppression ou une date ne peuvent pas être fabriquées sans la clé). */
@@ -4328,6 +4370,27 @@ const cloud = {
     this.status = 'ready';
     this.bind();
   },
+  /* QR code à usage unique : le code de synchronisation est déposé chiffré pour 10 minutes. */
+  async offerPairing() {
+    const K = { access: this.access }, code = this.st.code;
+    const token = pairCode.create();
+    const { id, key } = await pairCode.keys(token);
+    const blob = await vault.encrypt(key, { code }, 'jumelage');
+    await this.call('pair_offer', { p_id: id, p_blob: blob }, K);
+    return { token, id, expires: Date.now() + 10 * 60000 - 5000 };
+  },
+  pairStatus(id) { return this.call('pair_status', { p_id: id }); },
+  cancelPairing(id) { return this.isOn() ? this.call('pair_cancel', { p_id: id }) : Promise.resolve(); },
+  async takePairing(token) {
+    const { id, key } = await pairCode.keys(token);
+    const blob = await this.rpc('pair_take', { p_id: id });
+    const bad = () => { const err = new Error('Ce QR code a expiré ou a déjà servi. Affichez-en un nouveau sur l\'autre appareil (Réglages, puis Afficher le QR code).'); err.badCode = true; return err; };
+    if (!blob || typeof blob !== 'string') throw bad();
+    let v; try { v = await vault.decrypt(key, blob, 'jumelage'); } catch (e) { throw bad(); }
+    const c = syncCode.normalize(v && v.code);
+    if (!syncCode.valid(c)) throw bad();
+    return c;
+  },
   /* Ce que contient une liste avant de la rejoindre (création, nombre de tâches, appareils). */
   async info(code) {
     const { access } = await syncCode.keys(code);
@@ -4435,9 +4498,12 @@ const cloud = {
     const rows = [];
     let page = await this.call('pull_items', since ? { p_since: since, p_after_id: '' } : {}, K);
     rows.push(...page);
-    while (page.length === 500) {
+    for (let n = 1; Array.isArray(page) && page.length === 500 && n < 40; n++) {
       const last = page[page.length - 1];
       page = await this.call('pull_items', { p_since: last.modified_at, p_after_id: last.id }, K);
+      if (!Array.isArray(page) || !page.length) break;
+      const end = page[page.length - 1];
+      if (end.modified_at === last.modified_at && end.id === last.id) break; // le serveur ne progresse plus
       rows.push(...page);
     }
     if (!rows.length) return;
@@ -4523,33 +4589,50 @@ const cloud = {
     }
     if (rejected.length) await this.fetchServerVersions(rejected, K);
   },
-  /* Le serveur avait une version plus récente (autre appareil, horloge différente) : elle remplace la nôtre. */
+  /* Le serveur avait une version plus récente (autre appareil, horloge différente) : fusion avec les
+     mêmes règles que la lecture normale. Seuls les éléments demandés, authentiques et plus récents
+     sont pris ; une version ancienne rejouée par le serveur est ignorée. */
   async fetchServerVersions(ids, K) {
-    const list = ids.filter((id) => id !== SETTINGS_ITEM);
+    const asked = new Set(ids.filter((id) => id !== SETTINGS_ITEM));
     if (ids.includes(SETTINGS_ITEM)) this.st.cursor = null; // relire les réglages au prochain passage
+    const list = [...asked];
     for (let i = 0; i < list.length; i += 100) {
       const rows = await this.call('get_items', { p_ids: list.slice(i, i + 100) }, K);
-      let changed = false;
-      for (const r of rows) {
-        const at = Number(r.updated_at), local = byId(r.id);
+      const tasks = [], deleted = {};
+      for (const r of Array.isArray(rows) ? rows : []) {
+        if (!r || !asked.has(r.id)) continue;
+        const at = Number(r.updated_at);
+        if (!Number.isFinite(at)) continue;
         if (r.deleted) {
           try { await vault.decrypt(K.key, r.data, aadItem(r.id, at, true)); } catch (e) { continue; }
-          if (local) { state.tasks = state.tasks.filter((x) => x.id !== r.id); changed = true; }
-          state.deleted[r.id] = at; this.st.delPushed[r.id] = at; delete this.st.pushed[r.id];
+          deleted[r.id] = at;
           continue;
         }
         let t;
         try { t = normTask(await vault.decrypt(K.key, r.data, aadItem(r.id, at))); } catch (e) { continue; }
-        if (!t) continue;
-        if (local) Object.assign(local, t); else { state.tasks.push(t); }
-        delete state.deleted[r.id];
-        this.st.pushed[r.id] = t.updatedAt; delete this.st.delPushed[r.id];
-        changed = true;
+        if (t && t.id === r.id && t.updatedAt === at) tasks.push(t);
+      }
+      const m = mergeTasks(state.tasks, tasks, state.deleted, deleted);
+      // même date, contenu différent (deux appareils à la même milliseconde) : la version du serveur fait foi
+      for (const t of tasks) {
+        const k = m.tasks.findIndex((x) => x.id === t.id);
+        if (k >= 0 && m.tasks[k].updatedAt === t.updatedAt && JSON.stringify(m.tasks[k]) !== JSON.stringify(t)) m.tasks[k] = JSON.parse(JSON.stringify(t));
+      }
+      const changed = !sameTasks(m.tasks, state.tasks);
+      if (changed) state.tasks = m.tasks;
+      state.deleted = m.deleted;
+      // ce que détient le serveur est maintenant connu : pas de nouvel envoi en boucle
+      for (const t of tasks) { const l = byId(t.id); if (l && l.updatedAt <= t.updatedAt) this.st.pushed[t.id] = l.updatedAt; }
+      for (const [id, at] of Object.entries(deleted)) {
+        if (byId(id)) continue;
+        if (!state.deleted[id] || state.deleted[id] <= at) state.deleted[id] = at;
+        this.st.delPushed[id] = state.deleted[id];
       }
       this.save();
       if (changed) {
-        ui.undo = []; ui.redo = [];
+        ui.undo = []; ui.redo = []; ui.coalesceKey = null;
         state.savedAt = Math.max(Date.now(), state.savedAt + 1);
+        if (!byId(ui.selectedId)) ui.selectedId = null;
         saveLocal(); fileSync.schedule(); render({ detail: !els.detail.contains(document.activeElement) }); reminders.refresh();
       }
     }
@@ -4558,10 +4641,10 @@ const cloud = {
   async pushReminders(K) {
     const list = state.tasks.map((t) => [t, serverFireAt(t)]).filter(([, n]) => n)
       .sort((a, b) => a[1] - b[1]).slice(0, 300);
-    const sig = JSON.stringify(list.map(([t, n]) => [t.id, n, t.title, notifBody(t)]));
+    const sig = 'v2' + JSON.stringify(list.map(([t, n]) => [t.id, n, t.title, notifBody(t)])); // v2 : heure dans le message chiffré
     if (sig === this.st.remSig) return;
     const rows = [];
-    for (const [t, n] of list) rows.push({ task_id: t.id, fire_at: n, payload: await vault.encrypt(K.key, { title: truncate(t.title || 'Rappel', 140), body: truncate(notifBody(t), 240) }, `rem:${t.id}`) });
+    for (const [t, n] of list) rows.push({ task_id: t.id, fire_at: n, payload: await vault.encrypt(K.key, { title: truncate(t.title || 'Rappel', 140), body: truncate(notifBody(t), 240), at: n }, `rem:${t.id}`) });
     await this.call('set_reminders', { p_rows: rows }, K);
     this.st.remSig = sig; this.save();
   },
@@ -4706,6 +4789,7 @@ const scanner = {
     this.jsqrLoading ||= new Promise((resolve, reject) => {
       const s = document.createElement('script');
       s.src = 'jsqr.js'; s.async = true;
+      s.integrity = 'sha384-2bJQ22tPg8Mpf2UJ0azrzGaKeCSEUUmrph/yLGGxpZtiwsfd34gkgd73QDmp/QVs'; s.crossOrigin = 'anonymous'; // empreinte vérifiée par le navigateur
       s.onload = () => (self.jsQR ? resolve() : reject(new Error('jsQR')));
       s.onerror = () => { this.jsqrLoading = null; reject(new Error('jsQR')); };
       document.head.appendChild(s);
@@ -4721,14 +4805,20 @@ const scanner = {
 
 /* ---------- Fenêtre de synchronisation ---------- */
 const syncUi = {
-  step: 'start', pending: null, scanMsg: '',
+  step: 'start', pending: null, input: null, offer: null, timer: null, gen: 0,
   open(step) {
     const dlg = $('#dlgSync');
     this.step = step || (cloud.isOn() ? 'show' : 'start');
+    if (!dlg.open) dlg.showModal(); // ouverte avant le contenu : les étapes asynchrones la voient ouverte
     this.render();
-    if (!dlg.open) dlg.showModal();
   },
-  close() { scanner.stop(); const d = $('#dlgSync'); if (d.open) d.close(); },
+  close() { this.stopTimer(); scanner.stop(); const d = $('#dlgSync'); if (d.open) d.close(); },
+  /* Le QR code affiché est annulé dès qu'il quitte l'écran (fenêtre fermée, autre étape). */
+  stopTimer() {
+    clearInterval(this.timer); this.timer = null;
+    const o = this.offer; this.offer = null;
+    if (o && !o.done) cloud.cancelPairing(o.id).catch(() => {});
+  },
   fail(e) {
     const m = $('#syncMsg');
     let txt = e.message || String(e);
@@ -4738,102 +4828,134 @@ const syncUi = {
   },
   busy(on) { for (const b of $$('#dlgSync .btn')) b.disabled = on; const s = $('#syncSpin'); if (s) s.hidden = !on; },
   render() {
-    scanner.stop();
+    scanner.stop(); this.stopTimer();
+    const gen = ++this.gen;
     const body = $('#syncBody');
-    const code = cloud.st && cloud.st.code;
+    const already = cloud.isOn() && this.pending && cloud.st.code !== this.pending;
     const steps = {
       start: `<p class="setText">Retrouvez la même liste sur votre ordinateur et votre téléphone, avec les rappels en notification. Pas d'e-mail ni de mot de passe : les appareils se connectent en scannant un QR code. Vos tâches sont chiffrées sur l'appareil, le serveur ne peut pas les lire.</p>
         <div class="choice">
           <button type="button" class="choiceBtn" data-sync="create">${icon('sync')}<span><strong>Première fois</strong><small>Activer la synchronisation sur cet appareil et afficher le QR code</small></span></button>
           <button type="button" class="choiceBtn" data-sync="scan">${icon('camera')}<span><strong>Un autre appareil est déjà synchronisé</strong><small>Scanner son QR code ou saisir son code</small></span></button>
         </div>`,
-      show: code ? `<div class="pair">
-          <div class="qrWrap" id="syncQrWrap"><div class="qr big" id="syncQr" role="img" aria-label="QR code de synchronisation"></div>
-            <button type="button" class="qrMask" data-sync="reveal" hidden>${icon('qr')}<span>Afficher le QR code</span></button></div>
+      show: cloud.isOn() ? `<div class="pair">
+          <div class="qrWrap" id="syncQrWrap"><div class="qr big" id="syncQr" role="img" aria-label="QR code de connexion"></div>
+            <div class="qrState" id="qrState"><span class="spin" aria-hidden="true"></span><span>Préparation…</span></div></div>
           <div class="pairText">
             <ol class="steps2">
               <li>Sur l'autre appareil, ouvrez To do list et touchez <strong>Scanner le QR code</strong>.</li>
               <li>Visez ce code. C'est tout.</li>
             </ol>
             <p class="fHint">Application pas encore installée sur le téléphone ? Scannez ce code avec son appareil photo : il ouvre To do list et le connecte.</p>
-            <p class="codeLine">Ou saisissez : <code class="syncCode" id="syncCodeTxt">${esc(syncCode.format(code))}</code> <button type="button" class="linkBtn" data-sync="copy">${icon('copy')}Copier</button></p>
-            <p class="fHint warnHint">${icon('alert')}Ce code donne accès à vos tâches : ne le montrez qu'à vos propres appareils.</p>
+            <p class="codeLine" id="pairLine" hidden>Ou saisissez : <code class="syncCode" id="pairCodeTxt"></code></p>
+            <p class="fHint" id="pairInfo" aria-live="polite">Ce QR code ne sert qu'une fois et expire au bout de 10 minutes.</p>
           </div>
-        </div>${pushBlockHTML()}` : '',
+        </div>${pushBlockHTML()}
+        <p class="fHint secretLink"><button type="button" class="linkBtn" data-sync="secret">${icon('alert')}Code de secours</button> : pour tout récupérer si vous perdez tous vos appareils.</p>` : '',
+      secret: cloud.isOn() ? `<p class="setText">Ce code de 20 caractères donne accès à votre liste <strong>depuis n'importe quel appareil, sans limite de durée</strong>. Notez-le sur papier et rangez-le chez vous : il vous permettra de tout récupérer si vous perdez tous vos appareils en même temps.</p>
+        <p class="fHint warnHint">${icon('alert')}Ne le montrez à personne et ne l'envoyez pas par message. Si quelqu'un l'a vu : Réglages, puis <strong>Changer de code</strong>.</p>
+        <p class="codeLine"><code class="syncCode masked" id="secretTxt">${esc(syncCode.format(cloud.st.code))}</code>
+          <button type="button" class="linkBtn" data-sync="secret-reveal">Afficher</button>
+          <button type="button" class="linkBtn" data-sync="copy">${icon('copy')}Copier</button></p>` : '',
       scan: `<div class="scanBox"><video id="scanVideo" playsinline muted autoplay></video><div class="scanFrame" aria-hidden="true"></div><p class="scanState" id="scanState">Activation de l'appareil photo…</p></div>
         <p class="fHint">Sur l'appareil déjà synchronisé : Réglages, puis <strong>Afficher le QR code</strong>. <button type="button" class="linkBtn" data-sync="enter">Saisir le code à la place</button></p>`,
-      enter: `<p class="setText">Sur l'appareil déjà synchronisé : Réglages, puis <strong>Afficher le QR code</strong>. Le code est écrit sous le QR code.</p>
-        <label class="fLabel" for="syncCodeInput">Code de synchronisation</label>
-        <input class="field wide codeInput" id="syncCodeInput" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" maxlength="29">
-        <p class="fHint">Majuscules, minuscules et tirets : peu importe.</p>`,
-      confirm: this.pending ? `<p class="setText">${cloud.isOn() && cloud.st.code !== this.pending
-          ? 'Cet appareil est déjà synchronisé avec une autre liste. Le connecter à celle-ci ? Ses tâches actuelles y seront ajoutées.'
-          : 'Connecter cet appareil à votre liste synchronisée ? Les tâches déjà présentes ici y seront ajoutées.'}</p>
-        <div class="listInfo" id="syncInfo" aria-live="polite"><span class="spin" aria-hidden="true"></span>Vérification de la liste…</div>
-        <p class="fHint warnHint">${icon('alert')}Ne continuez que si ce QR code vient de l'un de vos propres appareils : quelqu'un d'autre pourrait lire les tâches que vous y ajouterez.</p>` : '',
+      enter: `<p class="setText">Sur l'appareil déjà synchronisé : Réglages, puis <strong>Afficher le QR code</strong>. Le code à saisir est écrit sous le QR code.</p>
+        <label class="fLabel" for="syncCodeInput">Code de connexion</label>
+        <input class="field wide codeInput" id="syncCodeInput" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX-X" maxlength="29">
+        <p class="fHint">13 caractères, valable 10 minutes. Vous pouvez aussi saisir votre code de secours (20 caractères).</p>
+        <p class="fHint warnHint">${icon('alert')}Ne saisissez jamais un code donné par quelqu'un d'autre : il pourrait lire tout ce que vous noterez ici.</p>`,
+      confirm: `<p class="setText" id="confirmText">${already
+          ? 'Cet appareil est déjà synchronisé avec une autre liste. Le connecter à celle-ci à la place ? Ses tâches actuelles y seront ajoutées.'
+          : state.tasks.length ? 'Connecter cet appareil à cette liste ? Les tâches déjà présentes ici y seront ajoutées.' : 'Connecter cet appareil à cette liste ?'}</p>
+        <div class="listInfo" id="syncInfo" aria-live="polite"><span class="spin" aria-hidden="true"></span>Vérification…</div>
+        <p class="fHint warnHint">${icon('alert')}Si vous n'avez pas créé cette liste vous-même, sur l'un de vos appareils, annulez : son propriétaire pourrait lire tout ce que vous y ajouterez.</p>`,
       ios: `<p class="setText">Pour recevoir les rappels en notification sur iPhone, To do list doit être installée sur l'écran d'accueil :</p>
         <ol class="steps2"><li>Touchez le bouton <strong>Partager</strong> de Safari (le carré avec une flèche vers le haut).</li>
         <li>Choisissez <strong>« Sur l'écran d'accueil »</strong>, puis Ajouter.</li>
         <li>Ouvrez To do list depuis son icône et touchez <strong>Scanner le QR code</strong>.</li></ol>
         <p class="fHint">Vous pouvez aussi connecter Safari tel quel, sans notifications.</p>`,
-      change: `<p class="setText">Un nouveau code remplace l'actuel. <strong>Tous vos autres appareils seront déconnectés</strong> et devront scanner le nouveau QR code. Leurs tâches ne sont pas perdues : elles seront fusionnées à la reconnexion.</p>
-        <p class="setText">À utiliser si un appareil a été perdu ou volé, ou si le code a été montré par erreur.</p>`,
+      change: `<p class="setText">Un nouveau code remplace l'actuel. <strong>Tous vos autres appareils seront déconnectés</strong> et devront scanner un nouveau QR code. Leurs tâches ne sont pas perdues : elles seront fusionnées à la reconnexion. L'ancien code de secours ne servira plus à rien.</p>
+        <p class="setText">À utiliser si un appareil a été perdu ou volé, ou si le code de secours a été vu par quelqu'un.</p>`,
     };
     const cancel = '<button type="button" class="btn" data-sync="cancel">Annuler</button>';
     const foot = {
       start: cancel,
       show: '<button type="button" class="btn primary" data-sync="cancel">Terminé</button>',
+      secret: '<button type="button" class="btn" data-sync="show">Retour</button><button type="button" class="btn primary" data-sync="cancel">Terminé</button>',
       scan: cancel,
-      enter: `${cancel}<button type="button" class="btn primary" data-sync="join-typed">Connecter</button>`,
-      confirm: `${cancel}<button type="button" class="btn primary" data-sync="join-pending">Connecter cet appareil</button>`,
+      enter: `${cancel}<button type="button" class="btn primary" data-sync="join-typed">Continuer</button>`,
+      confirm: `${cancel}<button type="button" class="btn primary" data-sync="join-pending" disabled>Connecter cet appareil</button>`,
       ios: `<button type="button" class="btn" data-sync="ios-anyway">Connecter Safari</button><button type="button" class="btn primary" data-sync="cancel">J'ai compris</button>`,
       change: `${cancel}<button type="button" class="btn dangerBtn" data-sync="change-go">Changer le code</button>`,
     };
-    const titles = { start: 'Synchroniser mes appareils', show: 'Ajouter un appareil', scan: 'Scanner le QR code', enter: 'Saisir le code', confirm: 'Connecter cet appareil', ios: 'Installer sur l\'iPhone', change: 'Changer de code' };
+    const titles = { start: 'Synchroniser mes appareils', show: 'Ajouter un appareil', secret: 'Code de secours', scan: 'Scanner le QR code', enter: 'Saisir le code', confirm: 'Connecter cet appareil', ios: 'Installer sur l\'iPhone', change: 'Changer de code' };
     $('#dlgSyncTitle').textContent = titles[this.step];
     body.innerHTML = steps[this.step] + '<p class="fErr" id="syncMsg" role="alert" hidden></p>';
     $('#syncFoot').innerHTML = `<span class="spin" id="syncSpin" hidden aria-label="En cours"></span>${foot[this.step]}`;
     const first = body.querySelector('input');
     if (first) setTimeout(() => first.focus(), 30);
-    clearTimeout(this.maskTimer);
-    if (this.step === 'show') { renderQr(code); this.reveal(true); }
+    else if (this.step === 'confirm') setTimeout(() => { const c = $('#syncFoot [data-sync="cancel"]'); if (c) c.focus(); }, 30);
+    if (this.step === 'show') this.startOffer(gen);
     if (this.step === 'scan') this.startScan();
-    if (this.step === 'confirm' && this.pending) this.loadInfo(this.pending);
+    if (this.step === 'confirm') this.loadPending(gen);
   },
-  async loadInfo(code) {
-    const box = $('#syncInfo');
-    const go = $('#syncFoot [data-sync="join-pending"]');
-    if (go) go.disabled = true;
-    let info;
-    try { info = await cloud.info(code); } catch (e) {
-      if (this.step !== 'confirm' || this.pending !== code) return;
-      if (e.badCode) { this.step = 'enter'; this.render(); this.fail(e); return; }
-      if (box) box.textContent = 'Impossible de vérifier la liste pour le moment.';
-      if (go) go.disabled = false;
+  live(gen, step) { return gen === this.gen && this.step === step && $('#dlgSync').open; },
+
+  /* ---- appareil déjà synchronisé : QR code à usage unique, valable 10 minutes ---- */
+  async startOffer(gen) {
+    const st = $('#qrState'), wrap = $('#syncQrWrap');
+    const say = (html, cls = '') => { if (st) { st.innerHTML = html; st.className = `qrState ${cls}`; } };
+    let offer;
+    try { offer = await cloud.offerPairing(); } catch (e) {
+      if (!this.live(gen, 'show')) return;
+      say(`<span>${e.offline ? 'Pas de connexion au serveur.' : 'QR code indisponible pour le moment.'}</span><button type="button" class="btn" data-sync="show">Réessayer</button>`, 'over');
       return;
     }
-    if (this.step !== 'confirm' || this.pending !== code || !box) return;
-    box.innerHTML = listInfoHTML(info);
-    if (go) go.disabled = false;
+    if (!this.live(gen, 'show')) return;
+    this.offer = offer;
+    renderQr(pairUrl(offer.token));
+    $('#pairCodeTxt').textContent = pairCode.format(offer.token);
+    $('#pairLine').hidden = false;
+    say('', 'gone');
+    wrap.classList.remove('masked');
+    const info = $('#pairInfo');
+    const tick = async () => {
+      if (!this.live(gen, 'show')) { this.stopTimer(); return; }
+      const left = Math.max(0, offer.expires - Date.now());
+      let s = null;
+      try { s = await cloud.pairStatus(offer.id); } catch (e) { /* réessayé au passage suivant */ }
+      if (!this.live(gen, 'show')) return;
+      if (s && s.state === 'used') {
+        offer.done = true; this.stopTimer();
+        wrap.classList.add('masked'); $('#pairLine').hidden = true;
+        const at = s.at ? new Date(s.at) : new Date();
+        say(`${icon('ok')}<span>Utilisé à ${pad(at.getHours())}:${pad(at.getMinutes())}</span><button type="button" class="btn" data-sync="show">Ajouter un autre appareil</button>`, 'over ok');
+        info.innerHTML = `Un appareil vient de se connecter avec ce QR code. <strong>Si ce n'est pas vous, changez de code tout de suite</strong> (Réglages, puis Changer de code).`;
+        return;
+      }
+      if (!left || (s && s.state === 'expired')) {
+        this.stopTimer();
+        wrap.classList.add('masked'); $('#pairLine').hidden = true;
+        say(`<span>QR code expiré</span><button type="button" class="btn" data-sync="show">Nouveau QR code</button>`, 'over');
+        info.textContent = 'Pour votre sécurité, chaque QR code ne sert qu\'une fois et expire au bout de 10 minutes.';
+        return;
+      }
+      const min = Math.ceil(left / 60000);
+      info.textContent = `Ce QR code ne sert qu'une fois. Il expire dans ${min} minute${min > 1 ? 's' : ''}.`;
+    };
+    this.timer = setInterval(tick, 3000);
+    tick();
   },
-  /* Le QR code et le code se masquent seuls après 2 minutes (fenêtre restée ouverte, écran partagé…). */
-  reveal(on) {
-    const w = $('#syncQrWrap'); if (!w) return;
-    w.classList.toggle('masked', !on);
-    w.querySelector('.qrMask').hidden = on;
-    const c = $('#syncCodeTxt'); if (c) c.classList.toggle('masked', !on);
-    clearTimeout(this.maskTimer);
-    if (on) this.maskTimer = setTimeout(() => this.reveal(false), 120000);
-  },
+
   startScan() {
     const video = $('#scanVideo'), state = $('#scanState');
     const say = (t) => { if (state) state.textContent = t; };
     scanner.start(video, (text) => {
-      const c = syncCode.fromText(text);
-      if (!c) { say('Ce QR code n\'est pas un code To do list. Visez le QR code affiché dans les Réglages de l\'autre appareil.'); return; }
+      const p = parsePairing(text);
+      if (!p) { say('Ce QR code n\'est pas un QR code To do list. Visez celui affiché dans les Réglages de l\'autre appareil.'); return; }
       scanner.stop();
       if (navigator.vibrate) try { navigator.vibrate(60); } catch (e) { /* ignore */ }
-      this.joinWith(c);
+      this.joinWith(p);
     }, (s) => {
       if (s === 'live') say('Visez le QR code affiché sur l\'autre appareil.');
       else if (s === 'denied') { say('Accès à l\'appareil photo refusé. Autorisez-le dans les réglages, ou saisissez le code.'); }
@@ -4841,19 +4963,63 @@ const syncUi = {
       else if (s === 'nolib') say('Le lecteur de QR code n\'a pas pu démarrer. Saisissez le code.');
     });
   },
-  async joinWith(code) {
-    this.pending = code;
-    if (cloud.isOn() && cloud.st.code === code) { this.step = 'show'; this.render(); toast('Cet appareil est déjà connecté à cette liste.'); return; }
-    if (!cloud.isOn() && !state.tasks.length) { this.step = 'confirm'; this.render(); await this.act('join-pending'); return; } // rien à protéger : on connecte
-    this.step = 'confirm'; this.render(); // des tâches seraient envoyées : on montre d'abord la liste visée
+  /* QR code scanné, lien ouvert ou code saisi : toujours une confirmation avant de connecter. */
+  joinWith(p) {
+    this.input = p; this.pending = null;
+    const dlg = $('#dlgSync');
+    this.step = 'confirm';
+    if (!dlg.open) dlg.showModal();
+    this.render();
+  },
+  async loadPending(gen) {
+    const box = $('#syncInfo');
+    await Promise.resolve();
+    const input = this.input;
+    try {
+      if (!this.pending) {
+        if (!input) throw new Error('Aucun code.');
+        const got = input.kind === 'token' ? await cloud.takePairing(input.v) : input.v;
+        // réponse d'une demande abandonnée entre-temps (annulée, autre QR code) : ignorée
+        if (!this.live(gen, 'confirm') || this.input !== input) return;
+        this.pending = got; this.input = null;
+      }
+      if (!this.live(gen, 'confirm')) return;
+      if (cloud.isOn() && cloud.st.code !== this.pending) {
+        const t = $('#confirmText');
+        if (t) t.textContent = 'Cet appareil est déjà synchronisé avec une autre liste. Le connecter à celle-ci à la place ? Ses tâches actuelles y seront ajoutées.';
+      }
+      if (cloud.isOn() && cloud.st.code === this.pending) {
+        this.pending = null; this.step = 'show'; this.render();
+        toast('Cet appareil est déjà connecté à cette liste.');
+        return;
+      }
+      const code = this.pending;
+      const info = await cloud.info(code);
+      if (!this.live(gen, 'confirm') || this.pending !== code) return;
+      box.innerHTML = listInfoHTML(info);
+      // court délai avant de pouvoir confirmer : on lit avant de cliquer
+      setTimeout(() => { if (this.live(gen, 'confirm')) { const go = $('#syncFoot [data-sync="join-pending"]'); if (go) go.disabled = false; } }, 1500);
+    } catch (e) {
+      if (!this.live(gen, 'confirm') || (input && this.input && this.input !== input)) return;
+      if (e.badCode) { this.pending = null; this.input = null; this.step = 'enter'; this.render(); this.fail(e); return; }
+      // erreur passagère : le code déjà récupéré est gardé, on peut réessayer
+      if (box) {
+        box.textContent = e.offline ? 'Pas de connexion au serveur. Vérifiez le réseau, puis réessayez.' : (e.message || 'Vérification impossible pour le moment.');
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.dataset.sync = 'retry-info'; b.textContent = 'Réessayer';
+        box.appendChild(b);
+      }
+    }
   },
   async act(a) {
     const msg = $('#syncMsg'); if (msg) msg.hidden = true;
     try {
-      if (a === 'cancel') { this.close(); return; }
+      if (a === 'cancel') { this.pending = null; this.input = null; this.close(); return; }
       if (a === 'scan') { this.step = 'scan'; this.render(); return; }
       if (a === 'enter') { this.step = 'enter'; this.render(); return; }
-      if (a === 'copy') { copyText(syncCode.format(cloud.st.code)).then((ok) => toast(ok ? 'Code copié.' : 'Copie impossible.')); return; }
+      if (a === 'show') { this.step = 'show'; this.render(); return; }
+      if (a === 'secret') { this.step = 'secret'; this.render(); return; }
+      if (a === 'secret-reveal') { const c = $('#secretTxt'); if (c) c.classList.remove('masked'); return; }
+      if (a === 'copy') { copyText(syncCode.format(cloud.st.code)).then((ok) => toast(ok ? 'Code de secours copié. Effacez-le du presse-papiers après usage.' : 'Copie impossible.')); return; }
       if (a === 'create') {
         this.busy(true);
         await cloud.create();
@@ -4863,14 +5029,12 @@ const syncUi = {
       if (a === 'join-typed') {
         const raw = $('#syncCodeInput').value;
         const c = syncCode.normalize(raw);
-        if (c.length !== 20) { this.fail(new Error(`Le code contient 20 caractères (${c.length} saisis).`)); return; }
-        if (!syncCode.valid(c)) { this.fail(new Error('Ce code contient une faute de frappe : vérifiez-le caractère par caractère.')); return; }
-        this.pending = c;
-        await this.act('join-pending');
+        if (c.length !== 13 && c.length !== 20) { this.fail(new Error(`Le code contient 13 caractères (${c.length} saisis).`)); return; }
+        const p = parsePairing(c);
+        if (!p) { this.fail(new Error('Ce code contient une faute de frappe : vérifiez-le caractère par caractère.')); return; }
+        this.joinWith(p);
         return;
       }
-      if (a === 'reveal') { this.reveal(true); return; }
-      if (a === 'ios-anyway') { this.step = 'confirm'; this.render(); return; }
       if (a === 'join-pending') {
         if (!this.pending) return;
         this.busy(true);
@@ -4880,11 +5044,12 @@ const syncUi = {
         toast('Appareil connecté : vos tâches sont synchronisées.', { duration: 6000 });
         return;
       }
+      if (a === 'ios-anyway' || a === 'retry-info') { this.step = 'confirm'; this.render(); return; }
       if (a === 'change-go') {
         this.busy(true);
         await cloud.changeCode();
         this.step = 'show'; this.render();
-        toast(cloud.status === 'ready' ? 'Nouveau code créé. Les autres appareils doivent scanner ce nouveau QR code.'
+        toast(cloud.status === 'ready' ? 'Nouveau code créé. Les autres appareils doivent scanner un nouveau QR code.'
           : 'Nouveau code créé. L\'envoi des tâches reprendra automatiquement ; l\'ancien code sera retiré ensuite.', { duration: 9000 });
         return;
       }
@@ -4894,16 +5059,16 @@ const syncUi = {
       this.fail(e);
     }
   },
-  /* Lien de jumelage (#lien=…) : QR code scanné avec l'appareil photo du téléphone. */
+  /* Lien de connexion (#jumelage=… ou #lien=…) : QR code scanné avec l'appareil photo du téléphone. */
   handleLink(hash = INITIAL_HASH) {
-    if (!cloud.enabled || !/lien=/.test(hash || '')) return;
+    if (!cloud.enabled || !/(jumelage|lien)=/.test(hash || '')) return;
     if (this.lastLink === hash && Date.now() - this.lastLinkAt < 5000) return; // même lien reçu deux fois au lancement
     this.lastLink = hash; this.lastLinkAt = Date.now();
-    const c = syncCode.fromText(hash);
     try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) { /* ignore */ }
-    if (!c) { toast('Ce lien de synchronisation est incomplet : scannez à nouveau le QR code.'); return; }
-    this.pending = c;
-    if (cloud.isOn() && cloud.st.code === c) { toast('Cet appareil est déjà connecté à cette liste.'); return; }
+    const p = parsePairing(appBaseUrl() + hash);
+    if (!p) { toast('Ce lien de connexion est incomplet : scannez à nouveau le QR code.'); return; }
+    if (p.kind === 'code' && cloud.isOn() && cloud.st.code === p.v) { toast('Cet appareil est déjà connecté à cette liste.'); return; }
+    this.input = p; this.pending = null;
     if (cloud.needsIosInstall()) { this.open('ios'); return; }
     this.open('confirm');
   },
@@ -4912,8 +5077,9 @@ function listInfoHTML(info) {
   const n = Number(info && info.tasks) || 0, d = Number(info && info.devices) || 0;
   const created = info && info.created_at ? new Date(info.created_at) : null;
   const when = created && !isNaN(created) ? created.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+  const hm = created && !isNaN(created) ? `${pad(created.getHours())}:${pad(created.getMinutes())}` : '';
   const parts = [
-    when ? `Liste créée le <strong>${esc(when)}</strong>` : 'Liste synchronisée',
+    when ? `Liste créée le <strong>${esc(when)}</strong> à ${esc(hm)}` : 'Liste synchronisée',
     n ? `<strong>${n}</strong> tâche${n > 1 ? 's' : ''}` : 'aucune tâche pour l\'instant',
     d ? `notifications sur <strong>${d}</strong> appareil${d > 1 ? 's' : ''}` : '',
   ].filter(Boolean);
@@ -4927,12 +5093,12 @@ function pushBlockHTML() {
   if (cloud.pushActive() || !cloud.pushSupported()) return '';
   return `<div class="hintBox"><strong>Recevoir les rappels sur cet appareil</strong><p>Même application fermée : le serveur envoie la notification à l'heure prévue, sans connaître son contenu.</p><div class="btnRow"><button type="button" class="btn primary" data-sync="push">${icon('bell')}Activer les notifications</button></div></div>`;
 }
-function renderQr(code) {
+function renderQr(text) {
   const box = $('#syncQr');
-  if (!box || typeof qrcode !== 'function' || !code) return;
+  if (!box || typeof qrcode !== 'function' || !text) return;
   try {
     const q = qrcode(0, 'M');
-    q.addData(pairUrl(code));
+    q.addData(text);
     q.make();
     box.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
   } catch (e) { box.hidden = true; }
@@ -4969,7 +5135,7 @@ function bindSync() {
     if (b) syncUi.act(b.dataset.sync);
     else if (e.target === dlg) syncUi.close();
   });
-  dlg.addEventListener('close', () => scanner.stop());
+  dlg.addEventListener('close', () => { scanner.stop(); syncUi.stopTimer(); });
   dlg.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
     e.preventDefault();
@@ -4979,7 +5145,8 @@ function bindSync() {
   dlg.addEventListener('input', (e) => {
     if (e.target.id !== 'syncCodeInput') return;
     const el = e.target, c = syncCode.normalize(el.value).slice(0, 20);
-    const f = c ? syncCode.format(c) : '';
+    // 13 caractères (QR code à usage unique) par groupes de 4, code de secours (20) par groupes de 5
+    const f = !c ? '' : c.length <= 13 ? pairCode.format(c) : syncCode.format(c);
     if (f !== el.value) { el.value = f; el.setSelectionRange(f.length, f.length); }
   });
   $('#setSyncBtns').addEventListener('click', async (e) => {
@@ -5025,6 +5192,16 @@ function openTaskFromNotification(id) {
 
 /* ---------- Démarrage ---------- */
 function boot() {
+  let framed = true;
+  try { framed = window.top !== window.self; } catch (e) { framed = true; }
+  if (framed) {
+    document.body.textContent = '';
+    const p = document.createElement('p');
+    p.style.cssText = 'font: 16px/1.5 system-ui, sans-serif; padding: 24px;';
+    p.textContent = 'To do list doit être ouverte dans son propre onglet.';
+    document.body.appendChild(p);
+    return;
+  }
   els.app = $('#app');
   els.todayLabel = $('#todayLabel');
   els.countTodo = $('#count-todo');
@@ -5194,8 +5371,8 @@ function boot() {
   }
   if (!ui.storageOk) renderStatus();
 
-  // Point d'accès pour les tests automatisés et le débogage
-  window.__odj = { cloud, syncUi, syncCode, scanner, select, setSetting, pwa, reminders, buildIcs, remindMs, state: () => state, ui, nextOccurrence, holidays, parseQuick, workdaysOfMonth, fileSync, idb, serialize, normData, VERSION };
+  // Point d'accès pour les tests automatisés : présent seulement dans les versions de test (build.mjs)
+  
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
