@@ -298,6 +298,9 @@ function setQuadrant(t, q) {
 const matrixActive = () => ui.view === 'matrix' && !ui.query.trim();
 const overlayMode = () => isNarrow() || matrixActive();
 
+/* Date de modification : jamais antérieure à la précédente, même si l'horloge de l'appareil retarde. */
+function touch(t) { t.updatedAt = Math.max(Date.now(), (t.updatedAt || 0) + 1); return t.updatedAt; }
+
 /* ---------- État ---------- */
 let state = { tasks: [], settings: { ...DEFAULT_SETTINGS }, savedAt: 0, deleted: {} };
 const ui = {
@@ -320,7 +323,7 @@ function normTask(t) {
   return {
     id: typeof t.id === 'string' && t.id ? t.id : uid(),
     title: str(t.title).slice(0, 500),
-    notes: str(t.notes),
+    notes: str(t.notes).slice(0, 100000),
     steps: Array.isArray(t.steps)
       ? t.steps.filter((s) => s && typeof s === 'object').map((s) => ({ id: typeof s.id === 'string' && s.id ? s.id : uid(), text: str(s.text), done: !!s.done }))
       : [],
@@ -364,10 +367,10 @@ function normData(d) {
   if (d.deleted && typeof d.deleted === 'object') {
     for (const [id, at] of Object.entries(d.deleted)) if (typeof at === 'number' && at > limit && !seen.has(id)) deleted[id] = at;
   }
-  return { tasks, settings, savedAt: num(d.savedAt) ?? 0, deleted };
+  return { tasks, settings, savedAt: num(d.savedAt) ?? 0, deleted, settingsAt: num(d.settingsAt) ?? 0 };
 }
 function serialize(data = state) {
-  return JSON.stringify({ app: APP, schema: SCHEMA, version: VERSION, savedAt: data.savedAt, settings: data.settings, tasks: data.tasks, deleted: data.deleted || {} }, null, 2);
+  return JSON.stringify({ app: APP, schema: SCHEMA, version: VERSION, savedAt: data.savedAt, settings: data.settings, settingsAt: data.settingsAt || 0, tasks: data.tasks, deleted: data.deleted || {} }, null, 2);
 }
 
 const byId = (id) => state.tasks.find((t) => t.id === id) || null;
@@ -420,7 +423,7 @@ function saveLocal() {
   return ok;
 }
 function serializeCompact() {
-  return JSON.stringify({ app: APP, schema: SCHEMA, version: VERSION, savedAt: state.savedAt, settings: state.settings, tasks: state.tasks, deleted: state.deleted });
+  return JSON.stringify({ app: APP, schema: SCHEMA, version: VERSION, savedAt: state.savedAt, settings: state.settings, settingsAt: state.settingsAt || 0, tasks: state.tasks, deleted: state.deleted });
 }
 let lastSnapDay = null;
 function readSnaps() { try { const a = JSON.parse(lsGet(KEY_SNAPS) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
@@ -446,6 +449,7 @@ function persist() {
   saveLocal();
   snapshotDaily();
   fileSync.schedule();
+  if (typeof cloud !== 'undefined') cloud.schedule();
 }
 /* Toute modification des tâches passe par ici. */
 function commit(mutator, opts = {}) {
@@ -491,12 +495,26 @@ function keepRemindRuntime(next, current) {
   }
   return next;
 }
+/* Après un remplacement en bloc (annuler, rétablir, importer, restaurer) : les tâches modifiées reçoivent
+   une nouvelle date de modification et les tâches disparues une marque de suppression, pour que les autres
+   appareils et le fichier de sauvegarde suivent au lieu de rétablir l'ancienne version. */
+function stampDiff(prev, next) {
+  const now = Date.now();
+  const before = new Map(prev.map((t) => [t.id, t]));
+  const ids = new Set();
+  for (const t of next) {
+    ids.add(t.id);
+    const p = before.get(t.id);
+    if (!p || JSON.stringify(p) !== JSON.stringify(t)) t.updatedAt = Math.max(now, (p ? p.updatedAt : 0) + 1);
+  }
+  for (const p of prev) if (!ids.has(p.id)) state.deleted[p.id] = now;
+}
 function undo() {
   if (cancelPendingCompletes()) return;
   const e = ui.undo.pop();
   if (!e) { toast('Rien à annuler.'); return; }
   ui.redo.push({ tasks: JSON.stringify(state.tasks), label: e.label, sel: ui.selectedId });
-  state.tasks = keepRemindRuntime(JSON.parse(e.tasks), state.tasks);
+  { const prev = state.tasks; state.tasks = keepRemindRuntime(JSON.parse(e.tasks), prev); stampDiff(prev, state.tasks); }
   ui.coalesceKey = null;
   if (e.sel && byId(e.sel)) ui.selectedId = e.sel;
   persist();
@@ -508,7 +526,7 @@ function redo() {
   const e = ui.redo.pop();
   if (!e) { toast('Rien à rétablir.'); return; }
   ui.undo.push({ tasks: JSON.stringify(state.tasks), label: e.label, sel: ui.selectedId });
-  state.tasks = keepRemindRuntime(JSON.parse(e.tasks), state.tasks);
+  { const prev = state.tasks; state.tasks = keepRemindRuntime(JSON.parse(e.tasks), prev); stampDiff(prev, state.tasks); }
   ui.coalesceKey = null;
   if (e.sel && byId(e.sel)) ui.selectedId = e.sel;
   persist();
@@ -518,6 +536,7 @@ function redo() {
 }
 function setSetting(key, value) {
   state.settings[key] = value;
+  if (typeof SYNCED_SETTINGS !== 'undefined' && SYNCED_SETTINGS.includes(key)) state.settingsAt = Date.now();
   persist();
   if (key === 'theme') applyTheme();
   render();
@@ -547,7 +566,7 @@ function placeAt(order, id, target) {
   else if (next) pos = next.position - 1;
   else pos = t.position;
   t.position = pos;
-  t.updatedAt = Date.now();
+  touch(t);
 }
 function addTask(raw, where) {
   const { title, due, remind } = parseQuick(nfc(raw));
@@ -569,13 +588,15 @@ function nextAfterCompletion(t) {
 }
 function completeTask(t) {
   const now = Date.now();
-  t.done = true; t.doneAt = now; t.updatedAt = now;
+  t.done = true; t.doneAt = now; touch(t);
   if (t.remind) { t.remind.ack = true; t.remind.snooze = null; }
   if (!t.repeat) return null;
   const next = nextAfterCompletion(t);
+  const nextId = `${(t.seriesId || t.id).slice(0, 60)}:${next}`;
+  if (byId(nextId)) { t.spawnedId = nextId; return byId(nextId); }
   const clone = normTask({
     ...JSON.parse(JSON.stringify(t)),
-    id: uid(), done: false, doneAt: null, due: next,
+    id: nextId, done: false, doneAt: null, due: next,
     steps: t.steps.map((s) => ({ id: uid(), text: s.text, done: false })),
     createdAt: now, updatedAt: now, spawnedId: null,
     seriesId: t.seriesId || t.id,
@@ -592,7 +613,7 @@ function completeTask(t) {
   return clone;
 }
 function reopenTask(t) {
-  t.done = false; t.doneAt = null; t.updatedAt = Date.now();
+  t.done = false; t.doneAt = null; touch(t);
   if (t.spawnedId) {
     const s = byId(t.spawnedId);
     if (s && !s.done && s.createdAt === s.updatedAt) { state.tasks = state.tasks.filter((x) => x.id !== s.id); state.deleted[s.id] = Date.now(); }
@@ -1042,7 +1063,7 @@ function bindMatrix() {
     const tri = e.target.closest('[data-tri]');
     if (tri) {
       const v = tri.dataset.tri === 'true';
-      commit(() => { t.matrix.important = v; t.updatedAt = Date.now(); }, { undo: v ? 'Marquée importante' : 'Marquée pas importante' });
+      commit(() => { t.matrix.important = v; touch(t); }, { undo: v ? 'Marquée importante' : 'Marquée pas importante' });
       const q = quadrantOf(t);
       const el = rowEl(t.id);
       if (el && !reducedMotion()) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1400); }
@@ -1111,7 +1132,7 @@ function bindMatrix() {
         const idx = rest.indexOf(tg.card.dataset.id) + (tg.after ? 1 : 0);
         placeAt(order, t.id, idx);
       }
-      t.updatedAt = Date.now();
+      touch(t);
     }, { undo: before === q ? 'Changement de priorité' : 'Changement de cadran', detail: false });
     if (byId(ui.selectedId) && ui.selectedId === t.id) updateDetailBits(t);
     const el = rowEl(t.id);
@@ -1331,7 +1352,7 @@ function renderDetail() {
     </section>
     <section class="block" aria-labelledby="hNotes">
       <div class="blockHead"><h3 id="hNotes">Notes</h3></div>
-      <textarea class="notes" id="dNotes" data-k="notes" aria-labelledby="hNotes" placeholder="Contexte, interlocuteurs, chemins de fichiers, liens, ce qu'il ne faut pas oublier…">${esc(t.notes)}</textarea>
+      <textarea class="notes" id="dNotes" data-k="notes" maxlength="100000" aria-labelledby="hNotes" placeholder="Contexte, interlocuteurs, chemins de fichiers, liens, ce qu'il ne faut pas oublier…">${esc(t.notes)}</textarea>
       <div class="links" id="dLinks"></div>
     </section>
     <footer class="dMeta" id="dMeta"></footer>
@@ -1501,7 +1522,7 @@ function bindDetail() {
       const flat = el.value.replace(/[\r\n]+/g, ' ');
       if (flat !== el.value) el.value = flat;
       const v = nfc(flat);
-      commit(() => { t.title = v; t.updatedAt = Date.now(); }, {
+      commit(() => { t.title = v; touch(t); }, {
         undo: 'Modification du titre', coalesce: `title:${t.id}`, detail: false,
         light: () => { const r = rowEl(t.id); const el = r && r.querySelector('.title, .mtitle'); if (el) el.innerHTML = t.title ? esc(t.title) : '<span class="untitled">Sans titre</span>'; },
       });
@@ -1509,21 +1530,21 @@ function bindDetail() {
       autosize(el);
       const hadNotes = !!t.notes.trim();
       const nv = nfc(el.value);
-      commit(() => { t.notes = nv; t.updatedAt = Date.now(); }, {
+      commit(() => { t.notes = nv; touch(t); }, {
         undo: 'Modification des notes', coalesce: `notes:${t.id}`, detail: false,
         light: hadNotes === !!nv.trim() ? () => {} : null, // l'icône « notes » n'apparaît ou ne disparaît que rarement
       });
       linksLater(t);
     } else if (k.startsWith('step:')) {
       const s = t.steps.find((x) => x.id === k.slice(5)); if (!s) return;
-      commit(() => { s.text = nfc(el.value); t.updatedAt = Date.now(); }, { undo: "Modification d'une étape", coalesce: k, detail: false, light: () => {} });
+      commit(() => { s.text = nfc(el.value); touch(t); }, { undo: "Modification d'une étape", coalesce: k, detail: false, light: () => {} });
     } else if (k === 'nth') {
       const n = parseInt(el.value, 10);
       if (!(n >= 1 && n <= 23)) return;
       commit(() => {
         t.repeat = { type: 'nth', n };
         shiftDue(t, nextOccurrence(t.repeat, todayISO(), true));
-        t.updatedAt = Date.now();
+        touch(t);
       }, { undo: 'Répétition modifiée', coalesce: `nth:${t.id}`, detail: false });
       updateDetailBits(t);
     }
@@ -1556,13 +1577,13 @@ function bindDetail() {
           t.repeat = makeRepeat(type, anchor, n);
           if (type === 'workday' || type === 'nth' || type === 'last' || !t.due) shiftDue(t, nextOccurrence(t.repeat, todayISO(), true));
         }
-        t.updatedAt = Date.now();
+        touch(t);
       }, { undo: 'Répétition modifiée', detail: false });
       updateDetailBits(t);
       if (type === 'nth') $('#dNth', pane).focus();
     } else if (k.startsWith('stepchk:')) {
       const s = t.steps.find((x) => x.id === k.slice(8)); if (!s) return;
-      commit(() => { s.done = el.checked; t.updatedAt = Date.now(); }, { undo: el.checked ? 'Étape cochée' : 'Étape décochée', detail: false });
+      commit(() => { s.done = el.checked; touch(t); }, { undo: el.checked ? 'Étape cochée' : 'Étape décochée', detail: false });
       el.closest('.step').classList.toggle('done', s.done);
       updateDetailBits(t);
       if (t.steps.length && t.steps.every((x) => x.done) && !t.done) {
@@ -1586,7 +1607,7 @@ function bindDetail() {
       commit(() => {
         if (key === 'important' && v === null) t.matrix = { important: null, urgent: null };
         else t.matrix[key] = v;
-        t.updatedAt = Date.now();
+        touch(t);
       }, { undo: key === 'important' ? 'Importance modifiée' : 'Urgence modifiée', detail: false });
       updateMatrixBits(t);
       return;
@@ -1636,7 +1657,7 @@ function bindDetail() {
         const s = t.steps[i];
         const tail = el.value.slice(caret);
         const ns = { id: uid(), text: tail, done: false };
-        commit(() => { s.text = el.value.slice(0, caret); t.steps.splice(i + 1, 0, ns); t.updatedAt = Date.now(); }, { undo: 'Ajout d\'étape', detail: false });
+        commit(() => { s.text = el.value.slice(0, caret); t.steps.splice(i + 1, 0, ns); touch(t); }, { undo: 'Ajout d\'étape', detail: false });
         renderSteps(t, { sid: ns.id, at: 'start' });
         updateDetailBits(t);
       } else if (e.key === 'Backspace' && el.selectionStart === 0 && el.selectionEnd === 0) {
@@ -1645,7 +1666,7 @@ function bindDetail() {
           e.preventDefault();
           const prev = t.steps[i - 1];
           const at = prev.text.length;
-          commit(() => { prev.text += el.value; t.steps.splice(i, 1); t.updatedAt = Date.now(); }, { undo: 'Fusion d\'étapes', detail: false });
+          commit(() => { prev.text += el.value; t.steps.splice(i, 1); touch(t); }, { undo: 'Fusion d\'étapes', detail: false });
           renderSteps(t);
           const pe = els.detail.querySelector(`[data-k="step:${CSS.escape(prev.id)}"]`);
           if (pe) { pe.focus(); pe.setSelectionRange(at, at); }
@@ -1655,7 +1676,7 @@ function bindDetail() {
         e.preventDefault();
         const j = i + (e.key === 'ArrowUp' ? -1 : 1);
         if (j < 0 || j >= t.steps.length) return;
-        commit(() => { const [s] = t.steps.splice(i, 1); t.steps.splice(j, 0, s); t.updatedAt = Date.now(); }, { undo: 'Déplacement d\'étape', detail: false });
+        commit(() => { const [s] = t.steps.splice(i, 1); t.steps.splice(j, 0, s); touch(t); }, { undo: 'Déplacement d\'étape', detail: false });
         renderSteps(t, { sid, at: 'end' });
       } else if (e.key === 'ArrowUp' && !e.altKey) {
         if (i > 0) { e.preventDefault(); focusStep(t.steps[i - 1].id); }
@@ -1691,14 +1712,14 @@ function focusStep(sid) {
   if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
 }
 function addSteps(t, texts) {
-  commit(() => { for (const x of texts) t.steps.push({ id: uid(), text: nfc(x).slice(0, 300), done: false }); t.updatedAt = Date.now(); }, { undo: texts.length > 1 ? 'Ajout d\'étapes' : 'Ajout d\'étape', detail: false });
+  commit(() => { for (const x of texts) t.steps.push({ id: uid(), text: nfc(x).slice(0, 300), done: false }); touch(t); }, { undo: texts.length > 1 ? 'Ajout d\'étapes' : 'Ajout d\'étape', detail: false });
   renderSteps(t);
   updateDetailBits(t);
 }
 function removeStep(t, sid, focusWhere) {
   const i = t.steps.findIndex((s) => s.id === sid);
   if (i < 0) return;
-  commit(() => { t.steps.splice(i, 1); t.updatedAt = Date.now(); }, { undo: "Suppression d'étape", detail: false });
+  commit(() => { t.steps.splice(i, 1); touch(t); }, { undo: "Suppression d'étape", detail: false });
   renderSteps(t);
   updateDetailBits(t);
   const target = focusWhere === 'prev' ? t.steps[i - 1] : (t.steps[i] || t.steps[i - 1]);
@@ -1716,7 +1737,7 @@ function remindPreset(t, kind) {
 function setRemind(t, v) {
   commit(() => {
     t.remind = v ? makeRemind(v.date, v.time) : null;
-    t.updatedAt = Date.now();
+    touch(t);
   }, { undo: v ? 'Rappel modifié' : 'Rappel retiré', detail: false });
   updateDetailBits(t);
   reminders.refresh();
@@ -1727,7 +1748,7 @@ function setDue(t, v) {
     shiftDue(t, v);
     if (!v) t.repeat = null;
     else if (t.repeat && (t.repeat.type === 'weekly' || t.repeat.type === 'monthly')) t.repeat = makeRepeat(t.repeat.type, v);
-    t.updatedAt = Date.now();
+    touch(t);
   }, { undo: v ? 'Échéance modifiée' : 'Échéance retirée', detail: false });
   updateDetailBits(t);
 }
@@ -1934,13 +1955,13 @@ const reminders = {
     const t = byId(id);
     if (!t || !t.remind) { this.refresh(); return; }
     this.closeNote(id);
-    if (how === 'done') { commit(() => { t.remind.ack = true; }, { undo: false, detail: false }); setDone(id, true); }
+    if (how === 'done') { commit(() => { t.remind.ack = true; touch(t); }, { undo: false, detail: false }); setDone(id, true); }
     else if (how === 'open' || how === 'ok') {
-      commit(() => { t.remind.ack = true; }, { undo: false, detail: false });
+      commit(() => { t.remind.ack = true; touch(t); }, { undo: false, detail: false });
       if (how === 'open') { window.focus(); if (ui.view === 'done') setView('todo'); select(id, { open: true }); }
     } else if (how.startsWith('snz:')) {
       const ms = snoozeTarget(how.slice(4));
-      commit(() => { t.remind.snooze = ms; t.remind.ack = false; }, { undo: false, detail: false });
+      commit(() => { t.remind.snooze = ms; t.remind.ack = false; touch(t); }, { undo: false, detail: false });
       toast(`Rappel reporté ${fmtWhenLong(ms)}.`);
     }
     const sel = byId(ui.selectedId); if (sel) updateDetailBits(sel);
@@ -2163,6 +2184,7 @@ const pwa = {
     const q = new URLSearchParams(location.search);
     if (q.has('nouvelle')) setTimeout(() => els.qa.focus(), 50);
     if (q.get('vue') === 'aujourdhui') setTimeout(() => setView('today'), 0);
+    if (q.get('tache')) { const id = q.get('tache'); setTimeout(() => openTaskFromNotification(id), 0); }
     if (q.toString()) { try { history.replaceState(history.state, '', location.pathname); } catch (e) { /* ignore */ } }
     this.render();
   },
@@ -2173,6 +2195,10 @@ const pwa = {
     });
   },
   async install() {
+    if (isIos()) {
+      toast('Sur iPhone : touchez le bouton Partager de Safari (le carré avec une flèche), puis « Sur l\'écran d\'accueil ». Ouvrez ensuite To do list depuis son icône.', { duration: 14000 });
+      return;
+    }
     if (!this.promptEvent) {
       toast('Pour installer : cliquez sur l\'icône d\'installation à droite de la barre d\'adresse de Chrome, ou menu ⋮, puis « Caster, enregistrer et partager », puis « Installer la page en tant qu\'application ».', { duration: 12000 });
       return;
@@ -2186,7 +2212,9 @@ const pwa = {
     const card = $('#installCard');
     if (!card) return;
     const later = +(lsGet(KEY_INSTALL_LATER) || 0);
-    card.hidden = !(this.web && !this.standalone() && this.promptEvent && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000);
+    const ios = isIos() && !this.standalone();
+    card.hidden = !(this.web && !this.standalone() && (this.promptEvent || ios) && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000);
+    card.classList.toggle('ios', ios);
     renderSetupCard();
     // Réglages
     const sec = $('#setAppSec');
@@ -2215,16 +2243,26 @@ const KEY_SETUP_LATER = 'odj.setup.later';
 function renderSetupCard() {
   const el = $('#setupCard');
   if (!el) return;
+  const sc = $('#syncCard');
+  if (sc) {
+    const later = +(lsGet('odj.synccard.later') || 0);
+    sc.hidden = !(typeof cloud !== 'undefined' && cloud.enabled && !cloud.isOn() && !fileSync.supported && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000);
+  }
   el.hidden = !setupCardWanted();
 }
 function setupCardWanted() {
   const later = +(lsGet(KEY_SETUP_LATER) || 0);
   const installPending = typeof pwa !== 'undefined' && !$('#installCard').hidden;
-  return fileSync.supported && !fileSync.handle && !!fileSync.ready && !installPending && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000;
+  const cloudOn = typeof cloud !== 'undefined' && cloud.isOn();
+  return fileSync.supported && !fileSync.handle && !!fileSync.ready && !installPending && !cloudOn && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000;
 }
 function renderStatus() {
   renderSetupCard();
-  const s = fileSync.status();
+  let s = fileSync.status();
+  if (typeof cloud !== 'undefined' && cloud.enabled && (cloud.isOn() || cloud.status === 'signedout')) {
+    const c = cloud.statusLine();
+    if (!(c.tone === 'ok' && (s.tone === 'warn' || s.tone === 'err'))) s = c;
+  }
   const el = els.status;
   el.className = `status ${s.tone}`;
   el.innerHTML = `${icon(s.icon)}<span class="msg" title="${esc(s.title || s.text)}">${esc(s.text)}</span><span class="grow"></span>${s.action ? `<button type="button" class="linkBtn" data-status-act="${s.action.id}">${esc(s.action.label)}</button>` : ''}`;
@@ -2423,13 +2461,14 @@ const fileSync = {
     state.deleted = merged.deleted;
     const changedHere = !sameTasks(merged.tasks, state.tasks);
     if (changedHere) {
-      loadData({ tasks: merged.tasks, settings: data.savedAt > state.savedAt ? data.settings : state.settings, savedAt: 0, deleted: merged.deleted }, 'Fusion avec le fichier', { undoable: true });
+      const cloudOn = typeof cloud !== 'undefined' && cloud.isOn();
+      loadData({ tasks: merged.tasks, settings: data.savedAt > state.savedAt ? data.settings : state.settings, savedAt: 0, deleted: merged.deleted }, 'Fusion avec le fichier', { undoable: !cloudOn });
       persist();
       const bits = [];
       if (merged.added) bits.push(plural(merged.added, 'tâche ajoutée', 'tâches ajoutées'));
       if (merged.updated) bits.push(plural(merged.updated, 'tâche mise à jour', 'tâches mises à jour'));
       if (merged.removed) bits.push(plural(merged.removed, 'tâche supprimée', 'tâches supprimées'));
-      toast(`Modifications reprises depuis ${this.handle.name} : ${bits.join(', ') || 'liste mise à jour'}.`, { action: 'Annuler', onAction: undo, duration: 9000 });
+      toast(`Modifications reprises depuis ${this.handle.name} : ${bits.join(', ') || 'liste mise à jour'}.`, cloudOn ? { duration: 9000 } : { action: 'Annuler', onAction: undo, duration: 9000 });
     }
     if (!sameTasks(merged.tasks, data.tasks)) await this.writeNow({ force: true });
     else this.lastWrite = Date.now();
@@ -2541,6 +2580,7 @@ function loadData(data, label, { undoable = true } = {}) {
   state.tasks = data.tasks;
   if (data.deleted) state.deleted = { ...data.deleted };
   state.settings = { ...state.settings, ...data.settings };
+  if (data.settingsAt) state.settingsAt = Math.max(data.settingsAt, state.settingsAt || 0);
   state.savedAt = Math.max(data.savedAt || 0, state.savedAt);
   applyTheme();
   saveLocal();
@@ -2598,7 +2638,7 @@ async function importFile(file) {
   });
   if (!choice || choice === 'cancel') return;
   if (choice === 'replace') {
-    commit(() => { state.tasks = keepRemindRuntime(data.tasks, state.tasks); }, { undo: 'Import' });
+    commit(() => { const prev = state.tasks; state.tasks = keepRemindRuntime(data.tasks, prev); stampDiff(prev, state.tasks); }, { undo: 'Import' });
   } else {
     let added = 0, updated = 0;
     commit(() => {
@@ -2713,6 +2753,7 @@ function refreshSettings() {
   $('#prefRemSticky').checked = state.settings.remindSticky;
   reminders.renderSettings();
   pwa.render();
+  renderSyncSettings();
 }
 function bindSettings() {
   const dlg = $('#dlgSettings');
@@ -2736,7 +2777,7 @@ function bindSettings() {
       });
       if (ok !== 'ok') return;
       const data = normData({ tasks: s.tasks });
-      commit(() => { state.tasks = keepRemindRuntime(data.tasks, state.tasks); }, { undo: 'Restauration' });
+      commit(() => { const prev = state.tasks; state.tasks = keepRemindRuntime(data.tasks, prev); stampDiff(prev, state.tasks); }, { undo: 'Restauration' });
       dlg.close();
       toast(`Liste restaurée au ${longDate(s.day)}.`, { action: 'Annuler', onAction: undo });
     } else if ('close' in b.dataset) dlg.close();
@@ -2983,7 +3024,7 @@ function onKey(e) {
       if (!t || t.done) return;
       e.preventDefault();
       const v = t.matrix.important !== true;
-      commit(() => { t.matrix.important = v; t.updatedAt = Date.now(); }, { undo: v ? 'Marquée importante' : 'Marquée pas importante' });
+      commit(() => { t.matrix.important = v; touch(t); }, { undo: v ? 'Marquée importante' : 'Marquée pas importante' });
       toast(`${v ? 'Importante' : 'Pas importante'} : ${QUADS[quadrantOf(t)].title.toLowerCase()}.`);
       return;
     }
@@ -2993,7 +3034,7 @@ function onKey(e) {
       e.preventDefault();
       const a = autoUrgent(t);
       const next = t.matrix.urgent === null ? !a : null; // automatique → forcé à l'inverse → automatique
-      commit(() => { t.matrix.urgent = next; t.updatedAt = Date.now(); }, { undo: 'Urgence modifiée' });
+      commit(() => { t.matrix.urgent = next; touch(t); }, { undo: 'Urgence modifiée' });
       toast(next === null ? `Urgence automatique : ${a ? 'urgente' : 'pas urgente'} selon l'échéance.` : (next ? 'Forcée urgente.' : 'Forcée pas urgente.'));
       return;
     }
@@ -3006,6 +3047,701 @@ function onKey(e) {
       return;
     default:
   }
+}
+
+{{QR_JS}}
+/* =====================================================================
+   Synchronisation entre appareils, chiffrée de bout en bout
+   Le serveur (Supabase) ne reçoit que du contenu chiffré sur l'appareil.
+   ===================================================================== */
+const CLOUD_URL = '{{CLOUD_URL}}';
+const CLOUD_KEY = '{{CLOUD_KEY}}';
+const KEY_CLOUD = 'odj.cloud.v1';
+const SETTINGS_ITEM = '__settings';
+const SYNCED_SETTINGS = ['addTo', 'holidays', 'urgentDays', 'remindTime'];
+const PBKDF2_ITER = 310000;
+const enc8 = new TextEncoder(), dec8 = new TextDecoder();
+const b64e = (buf) => { const b = new Uint8Array(buf); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
+const b64d = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const b64urlToBytes = (s) => b64d(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+
+const vault = {
+  async derive(pass, saltB64, iterations) {
+    const base = await crypto.subtle.importKey('raw', enc8.encode(pass.normalize('NFC')), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt: b64d(saltB64), iterations },
+      base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  },
+  async encrypt(key, value, aad) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc8.encode(aad) }, key, enc8.encode(JSON.stringify(value)));
+    return `v1.${b64e(iv)}.${b64e(ct)}`;
+  },
+  async decrypt(key, text, aad) {
+    const [v, iv, ct] = String(text).split('.');
+    if (v !== 'v1' || !iv || !ct) throw new Error('format inconnu');
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64d(iv), additionalData: enc8.encode(aad) }, key, b64d(ct));
+    return JSON.parse(dec8.decode(pt));
+  },
+};
+
+const cloud = {
+  enabled: !!CLOUD_URL && !CLOUD_URL.startsWith('{{') && pwaWeb(),
+  st: null,          // état persistant (session, curseur, ce qui a déjà été envoyé)
+  key: null,         // clé de chiffrement (CryptoKey non exportable), gardée dans IndexedDB
+  status: 'off',     // off | locked | ready | syncing | offline | error | signedout
+  error: '',
+  running: false, again: false, timer: null, backoff: 0, lastOk: 0,
+
+  load() {
+    try { this.st = JSON.parse(lsGet(KEY_CLOUD) || 'null'); } catch (e) { this.st = null; }
+    if (!this.st || typeof this.st !== 'object') this.st = {};
+    this.st.pushed ||= {}; this.st.delPushed ||= {};
+  },
+  save() { lsSet(KEY_CLOUD, JSON.stringify(this.st)); },
+  isOn() { return this.enabled && !!(this.st && this.st.session); },
+
+  async init() {
+    if (!this.enabled) return;
+    this.load();
+    if (!this.st.session) { this.status = 'off'; return; }
+    try { this.key = await idb.get('cryptoKey'); } catch (e) { this.key = null; }
+    if (!this.key || this.st.keyUser !== this.st.session.user_id || !this.st.keySalt) { this.key = null; this.status = 'locked'; renderStatus(); return; }
+    this.status = 'ready';
+    this.bind();
+    this.sync();
+  },
+  bound: false,
+  bind() {
+    if (this.bound) return;
+    this.bound = true;
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.sync(); });
+    window.addEventListener('focus', () => this.sync());
+    window.addEventListener('online', () => { this.backoff = 0; this.sync(); });
+    setInterval(() => { if (document.visibilityState === 'visible') this.sync(); }, 60000);
+  },
+  /* Appelé après chaque modification locale : envoi groupé 1,5 s plus tard. */
+  schedule() {
+    if (!this.key || !this.isOn()) return;
+    if (this.running) { this.again = true; return; }
+    if (this.status === 'locked' || this.status === 'signedout') return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.sync(), 1500);
+  },
+
+  /* ---------- appels au serveur ---------- */
+  async api(path, { method = 'GET', body, auth = true, prefer } = {}) {
+    const headers = { apikey: CLOUD_KEY, 'Content-Type': 'application/json' };
+    if (prefer) headers.Prefer = prefer;
+    if (auth) headers.Authorization = `Bearer ${await this.token()}`;
+    let r;
+    try {
+      r = await fetch(CLOUD_URL + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
+    } catch (e) { const err = new Error('réseau'); err.offline = true; throw err; }
+    if (r.status === 401 && auth && !this._retried) {
+      this._retried = true;
+      try { await this.refresh(true); return await this.api(path, { method, body, auth, prefer }); } finally { this._retried = false; }
+    }
+    const text = await r.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+    if (!r.ok) {
+      const err = new Error((data && (data.msg || data.message || data.error_description || data.error)) || `erreur ${r.status}`);
+      err.status = r.status; err.code = data && (data.error_code || data.code);
+      if (/coffre changé/.test(err.message)) err.vaultChanged = true;
+      throw err;
+    }
+    return data;
+  },
+  async token() {
+    const s = this.st.session;
+    if (!s) { const e = new Error('non connecté'); e.signedOut = true; throw e; }
+    if (Date.now() > s.expires_at - 60000) await this.refresh();
+    return this.st.session.access_token;
+  },
+  async refresh(force = false) {
+    if (!this.st.session) return;
+    if (!force && Date.now() <= this.st.session.expires_at - 60000) return;
+    if (this._refreshing) return this._refreshing;
+    const stale = this.st.session.access_token;
+    this._refreshing = withLock('odj-cloud-auth', async () => {
+      // une autre fenêtre a peut-être déjà renouvelé la session : on relit avant d'agir
+      this.reloadSession();
+      const s = this.st.session;
+      if (!s) { const err = new Error('session expirée'); err.signedOut = true; throw err; }
+      if (s.access_token !== stale && Date.now() <= s.expires_at - 60000) return;
+      try {
+        const d = await this.api('/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: s.refresh_token }, auth: false });
+        this.setSession(d);
+      } catch (e) {
+        if (!e.offline && e.status && e.status < 500) { // session expirée ou révoquée : il faut se reconnecter
+          this.st.session = null; this.save(); this.status = 'signedout'; renderStatus();
+          const err = new Error('session expirée'); err.signedOut = true; throw err;
+        }
+        throw e;
+      }
+    }).finally(() => { this._refreshing = null; });
+    return this._refreshing;
+  },
+  reloadSession() {
+    try { const fresh = JSON.parse(lsGet(KEY_CLOUD) || 'null'); if (fresh && 'session' in fresh) this.st.session = fresh.session; } catch (e) { /* ignore */ }
+  },
+  setSession(d) {
+    this.st.session = { access_token: d.access_token, refresh_token: d.refresh_token, expires_at: Date.now() + (d.expires_in || 3600) * 1000, user_id: d.user && d.user.id, email: d.user && d.user.email };
+    this.save();
+  },
+  rpc(name, args) { return this.api(`/rest/v1/rpc/${name}`, { method: 'POST', body: args }); },
+
+  /* ---------- connexion ---------- */
+  async requestCode(email) {
+    await this.api('/auth/v1/otp', { method: 'POST', body: { email, create_user: true }, auth: false });
+    this.st.email = email; this.save();
+  },
+  async verifyCode(email, code) {
+    const d = await this.api('/auth/v1/verify', { method: 'POST', body: { type: 'email', email, token: code }, auth: false });
+    const prevUser = (this.st.session && this.st.session.user_id) || this.st.keyUser;
+    if (prevUser && prevUser !== (d.user && d.user.id)) { const ep = this.st.endpoint; this.resetLocalState(); this.st.endpoint = ep; this.st.pushAt = 0; }
+    this.setSession(d);
+    return this.api('/rest/v1/vault?select=salt,verifier,iterations', {}).then((rows) => (rows && rows[0]) || null);
+  },
+  async unlock(pass, existing) {
+    let v = existing;
+    if (!v) {
+      const salt = b64e(crypto.getRandomValues(new Uint8Array(16)));
+      const key = await vault.derive(pass, salt, PBKDF2_ITER);
+      const verifier = await vault.encrypt(key, { ok: 'to-do-list' }, 'verifier');
+      try {
+        await this.api('/rest/v1/vault', { method: 'POST', body: { salt, verifier, iterations: PBKDF2_ITER }, prefer: 'return=minimal' });
+        return this.useKey(key, salt);
+      } catch (e) {
+        if (e.status !== 409) throw e; // un autre appareil vient de créer le coffre : on vérifie avec le sien
+        v = (await this.api('/rest/v1/vault?select=salt,verifier,iterations', {}))[0];
+      }
+    }
+    const key = await vault.derive(pass, v.salt, v.iterations || PBKDF2_ITER);
+    try { await vault.decrypt(key, v.verifier, 'verifier'); } catch (e) { const err = new Error('Phrase secrète incorrecte.'); err.badPass = true; throw err; }
+    return this.useKey(key, v.salt);
+  },
+  async useKey(key, salt) {
+    this.key = key;
+    await idb.set('cryptoKey', key);
+    if (this.st.keySalt !== salt) { // nouveau coffre (première fois, ou phrase secrète changée) : tout renvoyer et tout relire
+      this.st.pushed = {}; this.st.delPushed = {}; this.st.cursor = null; this.st.remSig = null; this.st.settingsPushed = null; this.st.pushAt = 0;
+    }
+    this.st.keySalt = salt;
+    this.st.keyUser = this.st.session.user_id;
+    this.st.label ||= deviceLabel();
+    this.save();
+    this.status = 'ready';
+    this.bind();
+    await this.sync({ first: true });
+  },
+  resetLocalState() {
+    this.st = { pushed: {}, delPushed: {}, email: this.st.email };
+    this.key = null;
+    idb.del('cryptoKey').catch(() => {});
+  },
+  async signOut() {
+    try { await this.unsubscribePush(); } catch (e) { /* hors ligne : tant pis */ }
+    try { await this.api('/auth/v1/logout', { method: 'POST', body: {} }); } catch (e) { /* ignore */ }
+    this.resetLocalState(); this.save();
+    this.status = 'off'; renderStatus();
+  },
+  async resetCloud() {
+    await this.rpc('reset_cloud', {});
+    const email = this.st.email, session = this.st.session;
+    this.resetLocalState(); this.st.session = session; this.st.email = email; this.save();
+    this.status = 'locked'; renderStatus();
+  },
+
+  /* ---------- synchronisation ---------- */
+  async sync(opts = {}) {
+    if (!this.key || !this.isOn()) return;
+    if (this.running) { this.again = true; return; }
+    clearTimeout(this.timer);
+    this.running = true;
+    try { await withLock('odj-cloud-sync', () => this._sync(opts)); } finally { this.running = false; if (this.again) { this.again = false; this.schedule(); } }
+  },
+  async _sync({ first = false } = {}) {
+    // une autre fenêtre a pu avancer : on repart de l'état partagé
+    try { const fresh = JSON.parse(lsGet(KEY_CLOUD) || 'null'); if (fresh && fresh.session) { this.st = { ...this.st, ...fresh }; this.st.pushed ||= {}; this.st.delPushed ||= {}; } } catch (e) { /* ignore */ }
+    if (!this.key || !this.isOn()) return;
+    const prev = this.status;
+    this.status = 'syncing'; if (prev !== 'ready') renderStatus();
+    try {
+      // La phrase secrète a-t-elle été changée depuis un autre appareil ? Alors cette clé est périmée :
+      // on s'arrête avant d'envoyer quoi que ce soit qui serait illisible pour les autres appareils.
+      const v = await this.api('/rest/v1/vault?select=salt', {});
+      if (!v || !v[0] || v[0].salt !== this.st.keySalt) { await this.lockStale(); return; }
+      await this.pull();
+      await this.push();
+      await this.pushReminders();
+      await this.ensurePush();
+      this.status = 'ready'; this.error = ''; this.backoff = 0; this.lastOk = Date.now();
+      this.st.lastSync = this.lastOk; this.save();
+      if (first && !$('#dlgSync').open) toast('Synchronisation active : vos tâches sont maintenant sur tous vos appareils connectés.', { duration: 7000 });
+    } catch (e) {
+      console.warn('Synchronisation', e);
+      if (e.signedOut) this.status = 'signedout';
+      else if (e.offline) this.status = 'offline';
+      else { this.status = 'error'; this.error = e.message || String(e); }
+      if (e.vaultChanged) { this.lockStale(); return; }
+      if (this.status !== 'signedout') {
+        this.backoff = Math.min(300000, (this.backoff || 5000) * 2);
+        clearTimeout(this.timer); this.timer = setTimeout(() => this.sync(), this.backoff);
+      }
+    } finally {
+      renderStatus(); refreshSettings();
+    }
+  },
+  async lockStale() {
+    this.key = null; await idb.del('cryptoKey').catch(() => {});
+    this.status = 'locked'; this.error = '';
+    renderStatus(); refreshSettings();
+    toast('La phrase secrète a été changée depuis un autre appareil : saisissez la nouvelle pour reprendre la synchronisation.', { duration: 10000 });
+  },
+  async pull() {
+    // léger recouvrement pour ne rien rater (écritures simultanées) ; la fusion rend les doublons sans effet
+    const since = this.st.cursor ? new Date(Date.parse(this.st.cursor) - 30000).toISOString() : '1970-01-01T00:00:00Z';
+    const rows = [];
+    const cols = 'select=id,updated_at,deleted,data,modified_at&order=modified_at.asc,id.asc&limit=500';
+    let page = await this.api(`/rest/v1/items?${cols}&modified_at=gte.${encodeURIComponent(since)}`);
+    rows.push(...page);
+    while (page.length === 500) {
+      const last = page[page.length - 1];
+      const or = `(modified_at.gt."${last.modified_at}",and(modified_at.eq."${last.modified_at}",id.gt."${last.id}"))`;
+      page = await this.api(`/rest/v1/items?${cols}&or=${encodeURIComponent(or)}`);
+      rows.push(...page);
+    }
+    if (!rows.length) return;
+    const tasks = [], deleted = {};
+    let settings = null, maxMod = this.st.cursor || since;
+    for (const r of rows) {
+      if (r.modified_at > maxMod) maxMod = r.modified_at;
+      if (r.deleted) { if (r.id !== SETTINGS_ITEM) deleted[r.id] = Number(r.updated_at); continue; }
+      let v;
+      try { v = await vault.decrypt(this.key, r.data, r.id); } catch (e) { console.warn('Élément illisible', r.id); continue; }
+      if (r.id === SETTINGS_ITEM) { settings = { at: Number(r.updated_at), v }; continue; }
+      const t = normTask(v);
+      if (t && t.id === r.id) tasks.push(t);
+    }
+    // fusion tâche par tâche (même règle que pour le fichier de sauvegarde)
+    const m = mergeTasks(state.tasks, tasks, state.deleted, deleted);
+    let changed = !sameTasks(m.tasks, state.tasks);
+    if (changed) { state.tasks = m.tasks; }
+    state.deleted = m.deleted;
+    for (const r of rows) {
+      if (r.deleted) { this.st.delPushed[r.id] = Number(r.updated_at); continue; }
+      const t = byId(r.id);
+      if (t && t.updatedAt === Number(r.updated_at)) this.st.pushed[r.id] = t.updatedAt;
+    }
+    if (settings && settings.at > (state.settingsAt || 0)) {
+      for (const k of SYNCED_SETTINGS) if (k in settings.v) state.settings[k] = settings.v[k];
+      state.settings = normData({ tasks: [], settings: state.settings }).settings;
+      state.settingsAt = settings.at; this.st.settingsPushed = settings.at;
+      changed = true;
+    }
+    this.st.cursor = maxMod;
+    this.save();
+    if (changed) {
+      if (ui.undo.length || ui.redo.length) { ui.undo = []; ui.redo = []; ui.coalesceKey = null; }
+      state.savedAt = Math.max(Date.now(), state.savedAt + 1);
+      saveLocal(); fileSync.schedule();
+      if (!byId(ui.selectedId)) ui.selectedId = null;
+      cancelPendingCompletes();
+      render({ detail: !els.detail.contains(document.activeElement) });
+      reminders.refresh();
+    }
+  },
+  async push() {
+    const rows = [];
+    for (const t of state.tasks) {
+      if (this.st.pushed[t.id] === t.updatedAt) continue;
+      rows.push({ id: t.id, updated_at: t.updatedAt, deleted: false, data: await vault.encrypt(this.key, t, t.id) });
+    }
+    for (const [id, at] of Object.entries(state.deleted)) {
+      if (this.st.delPushed[id] === at) continue;
+      rows.push({ id, updated_at: at, deleted: true, data: null });
+    }
+    const sAt = state.settingsAt || 0;
+    if (sAt && this.st.settingsPushed !== sAt) {
+      const v = {}; for (const k of SYNCED_SETTINGS) v[k] = state.settings[k];
+      rows.push({ id: SETTINGS_ITEM, updated_at: sAt, deleted: false, data: await vault.encrypt(this.key, v, SETTINGS_ITEM) });
+    }
+    const rejected = [];
+    const send = async (batch) => {
+      const res = await this.rpc('push_items', { rows: batch, p_salt: this.st.keySalt });
+      const rej = new Set((res && res.rejected) || []);
+      for (const r of batch) {
+        if (rej.has(r.id)) { rejected.push(r.id); continue; }
+        if (r.id === SETTINGS_ITEM) this.st.settingsPushed = r.updated_at;
+        else if (r.deleted) this.st.delPushed[r.id] = r.updated_at;
+        else this.st.pushed[r.id] = r.updated_at;
+      }
+      this.save();
+    };
+    for (let i = 0; i < rows.length; i += 200) {
+      const batch = rows.slice(i, i + 200);
+      try { await send(batch); } catch (e) {
+        if (e.vaultChanged || e.offline || e.signedOut || !(e.status >= 400 && e.status < 500) || batch.length === 1) throw e;
+        // une ligne refusée (trop volumineuse…) ne doit pas bloquer les autres
+        for (const r of batch) { try { await send([r]); } catch (e2) { if (e2.vaultChanged || e2.offline || e2.signedOut) throw e2; console.warn('Élément non envoyé', r.id, e2); this.skipped = r.id; } }
+      }
+    }
+    if (rejected.length) await this.fetchServerVersions(rejected);
+  },
+  /* Le serveur avait une version plus récente (autre appareil, horloge différente) : elle remplace la nôtre. */
+  async fetchServerVersions(ids) {
+    const list = ids.filter((id) => id !== SETTINGS_ITEM);
+    if (ids.includes(SETTINGS_ITEM)) this.st.cursor = null; // relire les réglages au prochain passage
+    for (let i = 0; i < list.length; i += 100) {
+      const part = list.slice(i, i + 100).map((id) => `"${id}"`).join(',');
+      const rows = await this.api(`/rest/v1/items?select=id,updated_at,deleted,data,modified_at&id=in.(${encodeURIComponent(part)})`);
+      let changed = false;
+      for (const r of rows) {
+        const at = Number(r.updated_at), local = byId(r.id);
+        if (r.deleted) {
+          if (local) { state.tasks = state.tasks.filter((x) => x.id !== r.id); changed = true; }
+          state.deleted[r.id] = at; this.st.delPushed[r.id] = at; delete this.st.pushed[r.id];
+          continue;
+        }
+        let t;
+        try { t = normTask(await vault.decrypt(this.key, r.data, r.id)); } catch (e) { continue; }
+        if (!t) continue;
+        if (local) Object.assign(local, t); else { state.tasks.push(t); }
+        delete state.deleted[r.id];
+        this.st.pushed[r.id] = t.updatedAt; delete this.st.delPushed[r.id];
+        changed = true;
+      }
+      this.save();
+      if (changed) {
+        ui.undo = []; ui.redo = [];
+        state.savedAt = Math.max(Date.now(), state.savedAt + 1);
+        saveLocal(); fileSync.schedule(); render({ detail: !els.detail.contains(document.activeElement) }); reminders.refresh();
+      }
+    }
+  },
+  /* Les prochains rappels, pour que le serveur les envoie même appareils éteints. Le texte est chiffré. */
+  async pushReminders() {
+    const list = state.tasks.map((t) => [t, serverFireAt(t)]).filter(([, n]) => n)
+      .sort((a, b) => a[1] - b[1]).slice(0, 300);
+    const sig = JSON.stringify(list.map(([t, n]) => [t.id, n, t.title, notifBody(t)]));
+    if (sig === this.st.remSig) return;
+    const rows = [];
+    for (const [t, n] of list) rows.push({ task_id: t.id, fire_at: n, payload: await vault.encrypt(this.key, { title: truncate(t.title || 'Rappel', 140), body: truncate(notifBody(t), 240) }, `rem:${t.id}`) });
+    await this.rpc('set_reminders', { rows, p_salt: this.st.keySalt });
+    this.st.remSig = sig; this.save();
+  },
+
+  /* ---------- notifications sur cet appareil ---------- */
+  pushSupported() { return 'serviceWorker' in navigator && 'PushManager' in window && typeof Notification !== 'undefined'; },
+  needsIosInstall() { return isIos() && !pwa.standalone(); },
+  async enablePush() {
+    if (this.needsIosInstall()) { toast('Sur iPhone, installez d\'abord l\'application : bouton Partager, puis « Sur l\'écran d\'accueil ». Ouvrez-la depuis l\'icône, puis réactivez les notifications.', { duration: 12000 }); return false; }
+    if (!this.pushSupported()) { toast('Ce navigateur ne permet pas les notifications en arrière-plan.'); return false; }
+    const p = await Notification.requestPermission(); // appel immédiat, dans le geste de l'utilisateur
+    if (p !== 'granted') { toast('Notifications refusées. Elles se réactivent dans les réglages du téléphone ou du navigateur.', { duration: 8000 }); refreshSettings(); return false; }
+    const ok = await this.subscribe();
+    if (ok) { this.st.pushWanted = true; this.save(); toast('Notifications activées sur cet appareil, même application fermée.'); }
+    refreshSettings(); reminders.renderSettings();
+    return ok;
+  },
+  async subscribe() {
+    const reg = await navigator.serviceWorker.ready;
+    const pub = await this.rpc('vapid_public_key', {});
+    if (!pub) { toast('Le serveur prépare l\'envoi des notifications (première minute après l\'installation). Réessayez dans un instant.'); return false; }
+    let sub = await reg.pushManager.getSubscription();
+    if (sub && this.st.vapid && this.st.vapid !== pub) { await sub.unsubscribe().catch(() => {}); sub = null; }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(pub) });
+    const j = sub.toJSON();
+    if (this.st.endpoint && this.st.endpoint !== j.endpoint) await this.rpc('unregister_push', { p_endpoint: this.st.endpoint }).catch(() => {});
+    await this.rpc('register_push', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth, p_label: this.st.label || deviceLabel() });
+    this.st.vapid = pub; this.st.pushAt = Date.now(); this.st.endpoint = j.endpoint; this.save();
+    return true;
+  },
+  async unsubscribePush() {
+    if (!this.pushSupported()) return;
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    const endpoints = new Set([sub && sub.endpoint, this.st.endpoint].filter(Boolean));
+    for (const ep of endpoints) await this.rpc('unregister_push', { p_endpoint: ep }).catch(() => {});
+    if (sub) await sub.unsubscribe().catch(() => {});
+    this.st.pushWanted = false; this.st.endpoint = null; this.save();
+  },
+  /* Réabonne l'appareil si besoin (abonnement expiré, ou une fois par jour pour rester à jour). */
+  async ensurePush() {
+    if (!this.st.pushWanted || !this.pushSupported() || Notification.permission !== 'granted') return;
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (!sub || sub.endpoint !== this.st.endpoint || Date.now() - (this.st.pushAt || 0) > 86400000) await this.subscribe().catch((e) => console.warn('Abonnement', e));
+  },
+  pushActive() { return !!(this.st && this.st.pushWanted && typeof Notification !== 'undefined' && Notification.permission === 'granted'); },
+
+  statusLine() {
+    const email = (this.st.session && this.st.session.email) || this.st.email || '';
+    switch (this.status) {
+      case 'locked': return { tone: 'warn', icon: 'alert', text: 'Synchronisation en attente de votre phrase secrète.', action: { id: 'sync-unlock', label: 'Déverrouiller' } };
+      case 'signedout': return { tone: 'warn', icon: 'alert', text: 'Synchronisation interrompue : reconnectez-vous.', action: { id: 'sync-login', label: 'Se reconnecter' } };
+      case 'offline': return { tone: '', icon: 'sync', text: 'Hors ligne : vos modifications seront synchronisées au retour du réseau.', title: 'Vos tâches restent enregistrées sur cet appareil.' };
+      case 'error': return { tone: 'err', icon: 'alert', text: `Synchronisation impossible : ${this.error}`, action: { id: 'sync-now', label: 'Réessayer' } };
+      default: {
+        const at = this.lastOk || this.st.lastSync;
+        return { tone: 'ok', icon: 'sync', text: at ? `Synchronisé à ${F_TIME.format(new Date(at))}` : 'Synchronisation…', title: `Compte ${email}. Chiffré de bout en bout.` };
+      }
+    }
+  },
+};
+function pwaWeb() { return /^https?:$/.test(location.protocol); }
+/* Heure d'envoi par le serveur : rappel prévu ou reporté, tant qu'il n'a pas été traité (même s'il a déjà
+   été affiché sur cet appareil : le téléphone doit le recevoir aussi). */
+function serverFireAt(t) {
+  if (!t.remind || t.done || t.remind.ack) return null;
+  return t.remind.snooze || remindMs(t.remind);
+}
+/* Verrou partagé entre fenêtres (si le navigateur le permet). */
+function withLock(name, fn) {
+  if (navigator.locks && navigator.locks.request) return navigator.locks.request(name, fn);
+  return fn();
+}
+function isIos() { return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  if (/iPhone/.test(ua)) return 'iPhone';
+  if (/iPad/.test(ua) || isIos()) return 'iPad';
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? 'Téléphone Android' : 'Tablette Android';
+  if (/Windows/.test(ua)) return 'PC Windows';
+  if (/Mac/.test(ua)) return 'Mac';
+  return 'Navigateur';
+}
+
+/* ---------- Assistant de connexion ---------- */
+const syncUi = {
+  step: 'email', vaultRow: null, email: '', resendAt: 0,
+  open(step) {
+    const dlg = $('#dlgSync');
+    this.step = step || (cloud.st.session && !cloud.key ? 'pass' : 'email');
+    if (this.step === 'pass') {
+      this.vaultRow = undefined;
+      this.render(); dlg.showModal();
+      cloud.api('/rest/v1/vault?select=salt,verifier,iterations', {}).then((rows) => { this.vaultRow = rows && rows[0] || null; this.render(); })
+        .catch((e) => { if (e.signedOut) { this.step = 'email'; this.render(); } else this.fail(e); });
+      return;
+    }
+    this.render(); dlg.showModal();
+  },
+  fail(e) {
+    const m = $('#syncMsg');
+    let txt = e.message || String(e);
+    if (e.offline) txt = 'Pas de connexion au serveur. Vérifiez le réseau (le réseau de l\'entreprise bloque peut-être l\'adresse).';
+    else if (e.status === 429) txt = 'Trop de demandes : patientez une minute avant de redemander un code.';
+    else if (/expired|invalid/i.test(txt) && this.step === 'code') txt = 'Code incorrect ou expiré. Vérifiez le dernier e-mail reçu, ou demandez un nouveau code.';
+    if (m) { m.textContent = txt; m.hidden = false; }
+    this.busy(false);
+  },
+  busy(on) { for (const b of $$('#dlgSync .btn')) b.disabled = on; const s = $('#syncSpin'); if (s) s.hidden = !on; },
+  render() {
+    const body = $('#syncBody');
+    const email = cloud.st.email || '';
+    const steps = {
+      email: `<p class="setText">Retrouvez la même liste sur votre ordinateur et votre téléphone. Vos tâches sont chiffrées sur l'appareil avant d'être envoyées : le serveur ne peut pas les lire.</p>
+        <label class="fLabel" for="syncEmail">Votre adresse e-mail</label>
+        <input class="field wide" id="syncEmail" type="email" autocomplete="email" inputmode="email" placeholder="prenom.nom@exemple.com" value="${esc(email)}">
+        <p class="fHint">Vous recevrez un code à 6 chiffres. Pas de mot de passe à retenir.</p>`,
+      code: `<p class="setText">Un code a été envoyé à <strong>${esc(this.email)}</strong>. Il arrive en général en moins d'une minute ; pensez aux courriers indésirables.</p>
+        <label class="fLabel" for="syncCode">Code reçu par e-mail</label>
+        <input class="field code" id="syncCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="123456">
+        <p class="fHint"><button type="button" class="linkBtn" data-sync="resend">Renvoyer le code</button> <button type="button" class="linkBtn" data-sync="back">Changer d'adresse</button></p>`,
+      pass: this.vaultRow === undefined
+        ? '<p class="setText">Connexion au serveur…</p>'
+        : this.vaultRow
+          ? `<p class="setText">Saisissez la phrase secrète choisie lors de la première synchronisation.</p>
+            <label class="fLabel" for="syncPass">Phrase secrète</label>
+            <input class="field wide" id="syncPass" type="password" autocomplete="current-password">
+            <p class="fHint"><button type="button" class="linkBtn" data-sync="forgot">Phrase secrète oubliée ?</button></p>`
+          : `<p class="setText">Choisissez une phrase secrète. Elle chiffre vos tâches : sans elle, personne, pas même le serveur, ne peut les lire. Vous la saisirez une fois sur chaque appareil.</p>
+            <label class="fLabel" for="syncPass">Phrase secrète</label>
+            <input class="field wide" id="syncPass" type="password" autocomplete="new-password" placeholder="par exemple : quatre mots que vous retenez">
+            <label class="fLabel" for="syncPass2">Confirmez</label>
+            <input class="field wide" id="syncPass2" type="password" autocomplete="new-password">
+            <p class="fHint" id="syncStrength">Au moins 12 caractères. Une phrase de quatre mots est facile à retenir et très solide.</p>
+            <p class="fHint">Les tâches déjà présentes sur cet appareil seront ajoutées à ce compte.</p>
+            <label class="inlineCheck"><input type="checkbox" id="syncNoted"> J'ai noté ma phrase secrète : elle ne peut pas être récupérée.</label>`,
+      forgot: `<p class="setText">Sans la phrase secrète, la copie de vos tâches sur le serveur est illisible. Vous pouvez l'effacer et repartir de zéro : les tâches enregistrées sur <strong>cet appareil</strong> seront envoyées à nouveau, chiffrées avec une nouvelle phrase.</p>
+        <p class="setText">Sur vos autres appareils, il faudra ensuite saisir la nouvelle phrase. Les tâches qu'ils sont seuls à avoir ne seront plus synchronisées tant qu'ils ne sont pas reconnectés.</p>`,
+      done: `<p class="setText"><strong>Synchronisation active.</strong> ${cloud.pushActive() ? 'Les notifications sont activées sur cet appareil.' : ''}</p>${pushBlockHTML()}${addDeviceHTML()}`,
+    };
+    const foot = {
+      email: '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="send">Recevoir le code</button>',
+      code: '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="verify">Valider</button>',
+      pass: this.vaultRow === undefined ? '<button type="button" class="btn" data-sync="cancel">Annuler</button>'
+        : this.vaultRow ? '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="unlock">Déverrouiller</button>'
+        : '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="create">Activer la synchronisation</button>',
+      forgot: '<button type="button" class="btn" data-sync="pass">Retour</button><button type="button" class="btn dangerBtn" data-sync="reset">Effacer la copie du serveur</button>',
+      done: '<button type="button" class="btn primary" data-sync="cancel">Terminé</button>',
+    };
+    const titles = { email: 'Synchroniser mes appareils', code: 'Vérification', pass: this.vaultRow ? 'Phrase secrète' : 'Choisir une phrase secrète', forgot: 'Phrase secrète oubliée', done: 'C\'est prêt' };
+    $('#dlgSyncTitle').textContent = titles[this.step];
+    body.innerHTML = steps[this.step] + '<p class="fErr" id="syncMsg" role="alert" hidden></p>';
+    $('#syncFoot').innerHTML = `<span class="spin" id="syncSpin" hidden aria-label="En cours"></span>${foot[this.step]}`;
+    const first = body.querySelector('input');
+    if (first) setTimeout(() => first.focus(), 30);
+    if (this.step === 'done') renderQr();
+  },
+  async act(a) {
+    const msg = $('#syncMsg'); if (msg) msg.hidden = true;
+    try {
+      if (a === 'cancel') { $('#dlgSync').close(); return; }
+      if (a === 'back') { this.step = 'email'; this.render(); return; }
+      if (a === 'pass') { this.step = 'pass'; this.vaultRow = this.vaultRow || null; this.render(); return; }
+      if (a === 'send' || a === 'resend') {
+        const email = a === 'send' ? $('#syncEmail').value.trim().toLowerCase() : this.email;
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { this.fail(new Error('Adresse e-mail invalide.')); return; }
+        if (a === 'resend' && Date.now() < this.resendAt) { this.fail(new Error(`Patientez ${Math.ceil((this.resendAt - Date.now()) / 1000)} secondes avant de redemander un code.`)); return; }
+        this.busy(true);
+        await cloud.requestCode(email);
+        this.email = email; this.resendAt = Date.now() + 60000;
+        this.step = 'code'; this.render();
+        if (a === 'resend') toast('Nouveau code envoyé.');
+        return;
+      }
+      if (a === 'verify') {
+        const code = $('#syncCode').value.replace(/\D/g, '');
+        if (code.length < 6) { this.fail(new Error('Le code contient 6 chiffres.')); return; }
+        this.busy(true);
+        this.vaultRow = await cloud.verifyCode(this.email, code);
+        this.step = 'pass'; this.render();
+        return;
+      }
+      if (a === 'unlock') {
+        const p = $('#syncPass').value;
+        if (!p) { this.fail(new Error('Saisissez la phrase secrète.')); return; }
+        this.busy(true);
+        await cloud.unlock(p, this.vaultRow);
+        this.step = 'done'; this.render();
+        return;
+      }
+      if (a === 'create') {
+        const p = $('#syncPass').value, p2 = $('#syncPass2').value;
+        if (p.length < 12) { this.fail(new Error('La phrase secrète doit faire au moins 12 caractères.')); return; }
+        if (p !== p2) { this.fail(new Error('Les deux saisies ne correspondent pas.')); return; }
+        if (!$('#syncNoted').checked) { this.fail(new Error('Cochez la case pour confirmer que vous avez noté la phrase secrète.')); return; }
+        this.busy(true);
+        await cloud.unlock(p, null);
+        this.step = 'done'; this.render();
+        return;
+      }
+      if (a === 'forgot') { this.step = 'forgot'; this.render(); return; }
+      if (a === 'reset') {
+        this.busy(true);
+        await cloud.resetCloud();
+        this.vaultRow = null; this.step = 'pass'; this.render();
+        toast('Copie du serveur effacée. Choisissez une nouvelle phrase secrète.');
+        return;
+      }
+      if (a === 'push') { await cloud.enablePush(); this.render(); return; }
+    } catch (e) { this.fail(e); }
+  },
+};
+function pushBlockHTML() {
+  if (!cloud.isOn() || !cloud.key) return '';
+  if (cloud.needsIosInstall()) {
+    return '<div class="hintBox"><strong>Notifications sur iPhone</strong><p>Installez d\'abord l\'application : bouton <strong>Partager</strong> de Safari, puis <strong>« Sur l\'écran d\'accueil »</strong>. Ouvrez-la ensuite depuis son icône pour activer les notifications.</p></div>';
+  }
+  if (cloud.pushActive()) return '';
+  if (!cloud.pushSupported()) return '';
+  return `<div class="hintBox"><strong>Recevoir les rappels sur cet appareil</strong><p>Même application fermée : le serveur envoie la notification à l'heure prévue, sans connaître son contenu.</p><div class="btnRow"><button type="button" class="btn primary" data-sync="push">${icon('bell')}Activer les notifications</button></div></div>`;
+}
+function addDeviceHTML() {
+  const url = location.origin + location.pathname.replace(/index\.html$/, '');
+  return `<div class="hintBox device"><div class="qr" id="syncQr" aria-hidden="true"></div><div><strong>Ajouter un autre appareil</strong>
+    <ol class="steps2"><li>Sur l'autre appareil (téléphone ou ordinateur), ouvrez <a href="${esc(url)}" target="_blank" rel="noopener">${esc(url.replace(/^https:\/\//, ''))}</a> (ou scannez ce code avec l'appareil photo).</li>
+    <li>Installez l'application : sur Android, menu ⋮ puis « Installer » ; sur iPhone, Partager puis « Sur l'écran d'accueil ».</li>
+    <li>Dans l'application installée : Réglages, « Synchroniser mes appareils », même adresse e-mail et même phrase secrète.</li></ol></div></div>`;
+}
+function renderQr() {
+  const box = $('#syncQr');
+  if (!box || typeof qrcode !== 'function') return;
+  try {
+    const q = qrcode(0, 'M');
+    q.addData(location.origin + location.pathname.replace(/index\.html$/, ''));
+    q.make();
+    box.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+  } catch (e) { box.hidden = true; }
+}
+function renderSyncSettings() {
+  const sec = $('#setSyncSec');
+  if (!sec) return;
+  sec.hidden = !cloud.enabled;
+  if (!cloud.enabled) return;
+  const txt = $('#setSyncText'), btns = $('#setSyncBtns');
+  const email = (cloud.st.session && cloud.st.session.email) || cloud.st.email || '';
+  if (!cloud.isOn()) {
+    txt.innerHTML = 'Retrouvez la même liste sur votre ordinateur et votre téléphone, avec les rappels en notification sur le téléphone. Chiffré de bout en bout : le serveur ne peut pas lire vos tâches.';
+    btns.innerHTML = `<button type="button" class="btn primary" data-syncset="open">${icon('sync')}Synchroniser mes appareils</button>`;
+    return;
+  }
+  if (!cloud.key) {
+    txt.innerHTML = `Compte <strong>${esc(email)}</strong>. Saisissez votre phrase secrète pour reprendre la synchronisation sur cet appareil.`;
+    btns.innerHTML = `<button type="button" class="btn primary" data-syncset="unlock">Saisir la phrase secrète</button><button type="button" class="btn" data-syncset="signout">Se déconnecter</button>`;
+    return;
+  }
+  const s = cloud.statusLine();
+  txt.innerHTML = `Compte <strong>${esc(email)}</strong>. ${esc(s.text)}. ${cloud.pushActive() ? 'Notifications activées sur cet appareil.' : ''}`;
+  btns.innerHTML = `<button type="button" class="btn" data-syncset="now">${icon('sync')}Synchroniser maintenant</button>
+    ${cloud.pushActive() ? `<button type="button" class="btn" data-syncset="pushoff">${icon('bell')}Couper les notifications ici</button>` : `<button type="button" class="btn primary" data-syncset="push">${icon('bell')}Activer les notifications ici</button>`}
+    <button type="button" class="btn" data-syncset="device">${icon('link')}Ajouter un appareil</button>
+    <button type="button" class="btn dangerBtn" data-syncset="signout">Déconnecter cet appareil</button>`;
+}
+function bindSync() {
+  if (!cloud.enabled) return;
+  $('#dlgSync').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-sync]');
+    if (b) syncUi.act(b.dataset.sync);
+    else if (e.target === $('#dlgSync')) $('#dlgSync').close();
+  });
+  $('#dlgSync').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || e.target.type === 'checkbox') return;
+    e.preventDefault();
+    const primary = $('#syncFoot .btn.primary') || $('#syncFoot .btn.dangerBtn');
+    if (primary && !primary.disabled) primary.click();
+  });
+  $('#dlgSync').addEventListener('input', (e) => {
+    if (e.target.id !== 'syncPass' || !$('#syncStrength')) return;
+    const p = e.target.value, words = p.trim().split(/\s+/).filter(Boolean).length;
+    $('#syncStrength').textContent = p.length < 12 ? `Encore ${12 - p.length} caractère${12 - p.length > 1 ? 's' : ''} au minimum.`
+      : (words >= 4 || p.length >= 20) ? 'Très bien.' : 'Correct. Une phrase de quatre mots serait encore plus solide.';
+  });
+  $('#setSyncBtns').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-syncset]');
+    if (!b) return;
+    const a = b.dataset.syncset;
+    if (a === 'open') { $('#dlgSettings').close(); syncUi.open('email'); }
+    else if (a === 'unlock') { $('#dlgSettings').close(); syncUi.vaultRow = null; syncUi.open('pass'); }
+    else if (a === 'now') { await cloud.sync(); toast(cloud.status === 'ready' ? 'Synchronisé.' : cloud.statusLine().text); }
+    else if (a === 'push') { await cloud.enablePush(); renderSyncSettings(); }
+    else if (a === 'pushoff') { await cloud.unsubscribePush(); renderSyncSettings(); toast('Notifications coupées sur cet appareil.'); }
+    else if (a === 'device') { $('#dlgSettings').close(); syncUi.open('done'); }
+    else if (a === 'signout') {
+      const c = await confirmDialog({ title: 'Déconnecter cet appareil ?', text: 'Les tâches restent sur cet appareil, mais ne seront plus synchronisées ni notifiées. Vos autres appareils ne sont pas touchés.', buttons: [{ id: 'cancel', label: 'Annuler' }, { id: 'ok', label: 'Déconnecter', primary: true, danger: true }] });
+      if (c === 'ok') { await cloud.signOut(); toast('Appareil déconnecté de la synchronisation.'); }
+      refreshSettings();
+    }
+  });
+  // Session partagée entre fenêtres : une déconnexion ou un renouvellement dans une autre fenêtre s'applique ici
+  window.addEventListener('storage', (e) => {
+    if (e.key !== KEY_CLOUD) return;
+    cloud.reloadSession();
+    if (!cloud.st.session && cloud.status !== 'off') { cloud.key = null; cloud.status = 'off'; renderStatus(); refreshSettings(); }
+  });
+  // Ouvrir la tâche d'une notification (clic sur la notification, application déjà ouverte)
+  if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.type === 'open' && d.t) openTaskFromNotification(d.t);
+  });
+}
+function openTaskFromNotification(id) {
+  if (!byId(id)) { cloud.sync().then(() => { if (byId(id)) openTaskFromNotification(id); }); return; }
+  if (ui.view === 'done' || (ui.view === 'today' && !inToday(byId(id)))) setView('todo');
+  select(id, { open: true });
 }
 
 /* ---------- Démarrage ---------- */
@@ -3062,6 +3798,12 @@ function boot() {
     if (b.dataset.app === 'install') { $('#dlgSettings').close(); pwa.install(); }
     else if (b.dataset.app === 'share') pwa.shareLink();
   });
+  $('#syncCard').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-synccard]');
+    if (!b) return;
+    if (b.dataset.synccard === 'go') syncUi.open('email');
+    else { lsSet('odj.synccard.later', String(Date.now())); renderSetupCard(); }
+  });
   $('#setupCard').addEventListener('click', (e) => {
     const b = e.target.closest('[data-setup]');
     if (!b) return;
@@ -3078,6 +3820,9 @@ function boot() {
     else if (a === 'reconnect') fileSync.reconnect();
     else if (a === 'retry') fileSync.writeNow();
     else if (a === 'export') exportJson();
+    else if (a === 'sync-unlock') syncUi.open('pass');
+    else if (a === 'sync-login') syncUi.open('email');
+    else if (a === 'sync-now') cloud.sync();
   });
 
   document.addEventListener('keydown', onKey);
@@ -3143,6 +3888,8 @@ function boot() {
   fileSync.init();
   reminders.init();
   pwa.init();
+  bindSync();
+  cloud.init();
   // Une fenêtre modale rend la page inerte : on masque les cartes de rappel le temps qu'elle est ouverte.
   for (const d of $$('dialog')) {
     const open = d.showModal.bind(d);
@@ -3156,7 +3903,7 @@ function boot() {
   if (!ui.storageOk) renderStatus();
 
   // Point d'accès pour les tests automatisés et le débogage
-  window.__odj = { pwa, reminders, buildIcs, remindMs, state: () => state, ui, nextOccurrence, holidays, parseQuick, workdaysOfMonth, fileSync, idb, serialize, normData, VERSION };
+  window.__odj = { cloud, select, setSetting, pwa, reminders, buildIcs, remindMs, state: () => state, ui, nextOccurrence, holidays, parseQuick, workdaysOfMonth, fileSync, idb, serialize, normData, VERSION };
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

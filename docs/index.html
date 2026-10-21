@@ -2,7 +2,11 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="To do list">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; worker-src 'self'; manifest-src 'self'; style-src 'unsafe-inline'; font-src data:; img-src 'self' data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0C6A74">
@@ -11,7 +15,7 @@
 <title>To do list</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230C6A74'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <!--
-  To do list — version Bureau 1.4.0
+  To do list — version Bureau 1.5.0
   Fichier autonome : aucune connexion réseau, aucune installation.
   Polices Barlow et Barlow Semi Condensed (Jeremy Tribby), SIL Open Font License 1.1.
 -->
@@ -707,6 +711,53 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
   .tools { gap: 2px; }
 }
 
+/* ---------- Synchronisation ---------- */
+.fLabel { display: block; margin: 12px 0 6px; font-weight: 600; font-size: 14px; color: var(--ink); }
+.field.wide { width: 100%; height: 42px; font-size: 16px; }
+.field.code { width: 180px; height: 48px; font-size: 24px; letter-spacing: .3em; text-align: center; font-variant-numeric: tabular-nums; }
+.fHint { margin: 8px 0 0; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.fHint .linkBtn { padding: 0 4px; height: 26px; }
+.fErr { margin: 12px 0 0; padding: 9px 12px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 14px; }
+#dlgSync .inlineCheck { margin-top: 14px; align-items: flex-start; }
+#dlgSync .inlineCheck input { margin-top: 2px; }
+.dlgFoot { align-items: center; }
+.spin { width: 18px; height: 18px; margin-right: auto; border-radius: 50%; border: 2px solid var(--line-2); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.btn:disabled { opacity: .55; cursor: default; }
+.hintBox { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+.hintBox strong { display: block; margin-bottom: 4px; font: 600 15px/1.25 var(--ff-c); }
+.hintBox p { margin: 0 0 10px; font-size: 14px; color: var(--ink-2); }
+.hintBox p:last-child { margin-bottom: 0; }
+.hintBox.device { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 14px; align-items: start; }
+.qr { width: 112px; height: 112px; padding: 4px; border-radius: 8px; background: #fff; }
+.qr svg { display: block; width: 100%; height: 100%; }
+.qr svg rect[fill="#ffffff"] { fill: #fff; }
+.steps2 { margin: 4px 0 0; padding-left: 18px; font-size: 14px; color: var(--ink-2); }
+.steps2 li { margin: 3px 0; }
+.steps2 a { color: var(--accent); overflow-wrap: anywhere; }
+.installCard .onlyIos { display: none; }
+.installCard.ios .onlyIos { display: block; }
+.installCard.ios .notIos { display: none; }
+@media (max-width: 520px) { .hintBox.device { grid-template-columns: minmax(0, 1fr); } .qr { display: none; } }
+
+/* ---------- Téléphone : encoches, zoom à la saisie, cibles tactiles ---------- */
+.topbar { padding-top: max(12px, env(safe-area-inset-top)); padding-left: max(24px, env(safe-area-inset-left)); padding-right: max(24px, env(safe-area-inset-right)); }
+.status { padding-bottom: max(4px, env(safe-area-inset-bottom)); min-height: calc(40px + env(safe-area-inset-bottom)); }
+@media (max-width: 860px) {
+  .topbar { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+  .detail { padding-top: max(12px, env(safe-area-inset-top)); padding-bottom: calc(40px + env(safe-area-inset-bottom)); }
+}
+@media (pointer: coarse) {
+  input, select, textarea, .qa input, .search input, .stepText, .addStep input { font-size: 16px; }
+  .row { min-height: 52px; }
+  .check { width: 40px; height: 40px; }
+  .row { grid-template-columns: 30px 40px minmax(0, 1fr) auto; }
+  .iconBtn { width: 42px; height: 42px; }
+  .pill, .segBtn { min-height: 36px; }
+  .toasts, .toasts[popover] { bottom: calc(54px + env(safe-area-inset-bottom)); }
+}
+@media (pointer: coarse) and (max-width: 520px) { .row { grid-template-columns: 26px 40px minmax(0, 1fr); } }
+
 </style>
 </head>
 <body>
@@ -751,13 +802,26 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
         <p class="qaHint" id="qaHint"></p>
       </form>
 
+      <div class="setupCard" id="syncCard" hidden>
+        <div class="setupIc"><svg class="ic" aria-hidden="true"><use href="#i-sync"/></svg></div>
+        <div class="setupBody">
+          <h2>Retrouver vos tâches de l'ordinateur</h2>
+          <p>Connectez cet appareil à votre compte pour avoir la même liste partout, et recevoir les rappels en notification même application fermée.</p>
+          <div class="btnRow">
+            <button type="button" class="btn primary" data-synccard="go">Synchroniser</button>
+            <button type="button" class="linkBtn" data-synccard="later">Plus tard</button>
+          </div>
+        </div>
+      </div>
+
       <div class="setupCard installCard" id="installCard" hidden>
         <div class="setupIc"><svg class="ic" aria-hidden="true"><use href="#i-install"/></svg></div>
         <div class="setupBody">
           <h2>Installer To do list sur cet ordinateur</h2>
-          <p>L'application s'ouvrira dans sa propre fenêtre, avec son icône dans la barre des tâches, et fonctionnera même sans réseau. Une fois installée, Chrome garde l'accès à votre fichier de sauvegarde : plus de sauvegarde en pause.</p>
+          <p class="notIos">L'application s'ouvrira dans sa propre fenêtre, avec son icône dans la barre des tâches, et fonctionnera même sans réseau. Une fois installée, Chrome garde l'accès à votre fichier de sauvegarde : plus de sauvegarde en pause.</p>
+          <p class="onlyIos">Touchez le bouton <strong>Partager</strong> de Safari (le carré avec une flèche vers le haut), puis <strong>« Sur l'écran d'accueil »</strong>. Ouvrez ensuite To do list depuis son icône : c'est nécessaire pour recevoir les notifications.</p>
           <div class="btnRow">
-            <button type="button" class="btn primary" data-install="go">Installer</button>
+            <button type="button" class="btn primary notIos" data-install="go">Installer</button>
             <button type="button" class="linkBtn" data-install="later">Plus tard</button>
           </div>
         </div>
@@ -823,6 +887,12 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
       <ul class="snaps" id="snapList"></ul>
     </section>
 
+    <section class="setSec" id="setSyncSec" hidden>
+      <h3>Synchronisation entre appareils</h3>
+      <p class="setText" id="setSyncText"></p>
+      <div class="btnRow" id="setSyncBtns"></div>
+    </section>
+
     <section class="setSec" id="setAppSec" hidden>
       <h3>Application</h3>
       <p class="setText" id="setAppText"></p>
@@ -880,7 +950,7 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
       </div>
     </section>
 
-    <p class="about">Version 1.4.0. Vos tâches restent sur cet ordinateur : l'application ne se connecte à aucun serveur.</p>
+    <p class="about">Version 1.5.0. Vos tâches restent sur cet ordinateur : l'application ne se connecte à aucun serveur.</p>
   </div>
 </dialog>
 
@@ -933,6 +1003,16 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
   </div>
 </dialog>
 
+<!-- Synchronisation -->
+<dialog id="dlgSync" aria-labelledby="dlgSyncTitle">
+  <div class="dlgHead">
+    <h2 id="dlgSyncTitle">Synchroniser mes appareils</h2>
+    <button type="button" class="iconBtn" data-sync="cancel" aria-label="Fermer"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="dlgBody" id="syncBody"></div>
+  <div class="dlgFoot" id="syncFoot"></div>
+</dialog>
+
 <!-- Confirmation générique -->
 <dialog id="dlgConfirm" aria-labelledby="dlgConfirmTitle">
   <div class="dlgHead"><h2 id="dlgConfirmTitle"></h2></div>
@@ -960,6 +1040,7 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
     <symbol id="i-ok" viewBox="0 0 24 24"><path d="M4.5 12.5l4.5 4.5L19.5 6.5"/></symbol>
     <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 15.5H3z"/><path d="M12 10v4.5M12 17.5h.01"/></symbol>
+    <symbol id="i-sync" viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-13.7 5.6M4 12a8 8 0 0 1 13.7-5.6"/><path d="M17.5 2.8v3.9h-3.9M6.5 21.2v-3.9h3.9"/></symbol>
     <symbol id="i-matrix" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
     <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5.5 21V4.5M5.5 4.5h11l-2 4 2 4h-11"/></symbol>
     <symbol id="i-install" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8.5 20.5h7M12 7.5v6M9 11l3 3 3-3"/></symbol>
@@ -982,7 +1063,7 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
 const APP = 'ordre-du-jour'; // identifiant interne du format de données (inchangé pour compatibilité)
 const APP_NAME = 'To do list';
 const SCHEMA = 1;
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const KEY_DATA = 'odj.data.v1';
 const KEY_SNAPS = 'odj.snapshots.v1';
 const KEY_BACKUP = 'odj.backup.v1';
@@ -1271,6 +1352,9 @@ function setQuadrant(t, q) {
 const matrixActive = () => ui.view === 'matrix' && !ui.query.trim();
 const overlayMode = () => isNarrow() || matrixActive();
 
+/* Date de modification : jamais antérieure à la précédente, même si l'horloge de l'appareil retarde. */
+function touch(t) { t.updatedAt = Math.max(Date.now(), (t.updatedAt || 0) + 1); return t.updatedAt; }
+
 /* ---------- État ---------- */
 let state = { tasks: [], settings: { ...DEFAULT_SETTINGS }, savedAt: 0, deleted: {} };
 const ui = {
@@ -1293,7 +1377,7 @@ function normTask(t) {
   return {
     id: typeof t.id === 'string' && t.id ? t.id : uid(),
     title: str(t.title).slice(0, 500),
-    notes: str(t.notes),
+    notes: str(t.notes).slice(0, 100000),
     steps: Array.isArray(t.steps)
       ? t.steps.filter((s) => s && typeof s === 'object').map((s) => ({ id: typeof s.id === 'string' && s.id ? s.id : uid(), text: str(s.text), done: !!s.done }))
       : [],
@@ -1337,10 +1421,10 @@ function normData(d) {
   if (d.deleted && typeof d.deleted === 'object') {
     for (const [id, at] of Object.entries(d.deleted)) if (typeof at === 'number' && at > limit && !seen.has(id)) deleted[id] = at;
   }
-  return { tasks, settings, savedAt: num(d.savedAt) ?? 0, deleted };
+  return { tasks, settings, savedAt: num(d.savedAt) ?? 0, deleted, settingsAt: num(d.settingsAt) ?? 0 };
 }
 function serialize(data = state) {
-  return JSON.stringify({ app: APP, schema: SCHEMA, version: VERSION, savedAt: data.savedAt, settings: data.settings, tasks: data.tasks, deleted: data.deleted || {} }, null, 2);
+  return JSON.stringify({ app: APP, schema: SCHEMA, version: VERSION, savedAt: data.savedAt, settings: data.settings, settingsAt: data.settingsAt || 0, tasks: data.tasks, deleted: data.deleted || {} }, null, 2);
 }
 
 const byId = (id) => state.tasks.find((t) => t.id === id) || null;
@@ -1393,7 +1477,7 @@ function saveLocal() {
   return ok;
 }
 function serializeCompact() {
-  return JSON.stringify({ app: APP, schema: SCHEMA, version: VERSION, savedAt: state.savedAt, settings: state.settings, tasks: state.tasks, deleted: state.deleted });
+  return JSON.stringify({ app: APP, schema: SCHEMA, version: VERSION, savedAt: state.savedAt, settings: state.settings, settingsAt: state.settingsAt || 0, tasks: state.tasks, deleted: state.deleted });
 }
 let lastSnapDay = null;
 function readSnaps() { try { const a = JSON.parse(lsGet(KEY_SNAPS) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
@@ -1419,6 +1503,7 @@ function persist() {
   saveLocal();
   snapshotDaily();
   fileSync.schedule();
+  if (typeof cloud !== 'undefined') cloud.schedule();
 }
 /* Toute modification des tâches passe par ici. */
 function commit(mutator, opts = {}) {
@@ -1464,12 +1549,26 @@ function keepRemindRuntime(next, current) {
   }
   return next;
 }
+/* Après un remplacement en bloc (annuler, rétablir, importer, restaurer) : les tâches modifiées reçoivent
+   une nouvelle date de modification et les tâches disparues une marque de suppression, pour que les autres
+   appareils et le fichier de sauvegarde suivent au lieu de rétablir l'ancienne version. */
+function stampDiff(prev, next) {
+  const now = Date.now();
+  const before = new Map(prev.map((t) => [t.id, t]));
+  const ids = new Set();
+  for (const t of next) {
+    ids.add(t.id);
+    const p = before.get(t.id);
+    if (!p || JSON.stringify(p) !== JSON.stringify(t)) t.updatedAt = Math.max(now, (p ? p.updatedAt : 0) + 1);
+  }
+  for (const p of prev) if (!ids.has(p.id)) state.deleted[p.id] = now;
+}
 function undo() {
   if (cancelPendingCompletes()) return;
   const e = ui.undo.pop();
   if (!e) { toast('Rien à annuler.'); return; }
   ui.redo.push({ tasks: JSON.stringify(state.tasks), label: e.label, sel: ui.selectedId });
-  state.tasks = keepRemindRuntime(JSON.parse(e.tasks), state.tasks);
+  { const prev = state.tasks; state.tasks = keepRemindRuntime(JSON.parse(e.tasks), prev); stampDiff(prev, state.tasks); }
   ui.coalesceKey = null;
   if (e.sel && byId(e.sel)) ui.selectedId = e.sel;
   persist();
@@ -1481,7 +1580,7 @@ function redo() {
   const e = ui.redo.pop();
   if (!e) { toast('Rien à rétablir.'); return; }
   ui.undo.push({ tasks: JSON.stringify(state.tasks), label: e.label, sel: ui.selectedId });
-  state.tasks = keepRemindRuntime(JSON.parse(e.tasks), state.tasks);
+  { const prev = state.tasks; state.tasks = keepRemindRuntime(JSON.parse(e.tasks), prev); stampDiff(prev, state.tasks); }
   ui.coalesceKey = null;
   if (e.sel && byId(e.sel)) ui.selectedId = e.sel;
   persist();
@@ -1491,6 +1590,7 @@ function redo() {
 }
 function setSetting(key, value) {
   state.settings[key] = value;
+  if (typeof SYNCED_SETTINGS !== 'undefined' && SYNCED_SETTINGS.includes(key)) state.settingsAt = Date.now();
   persist();
   if (key === 'theme') applyTheme();
   render();
@@ -1520,7 +1620,7 @@ function placeAt(order, id, target) {
   else if (next) pos = next.position - 1;
   else pos = t.position;
   t.position = pos;
-  t.updatedAt = Date.now();
+  touch(t);
 }
 function addTask(raw, where) {
   const { title, due, remind } = parseQuick(nfc(raw));
@@ -1542,13 +1642,15 @@ function nextAfterCompletion(t) {
 }
 function completeTask(t) {
   const now = Date.now();
-  t.done = true; t.doneAt = now; t.updatedAt = now;
+  t.done = true; t.doneAt = now; touch(t);
   if (t.remind) { t.remind.ack = true; t.remind.snooze = null; }
   if (!t.repeat) return null;
   const next = nextAfterCompletion(t);
+  const nextId = `${(t.seriesId || t.id).slice(0, 60)}:${next}`;
+  if (byId(nextId)) { t.spawnedId = nextId; return byId(nextId); }
   const clone = normTask({
     ...JSON.parse(JSON.stringify(t)),
-    id: uid(), done: false, doneAt: null, due: next,
+    id: nextId, done: false, doneAt: null, due: next,
     steps: t.steps.map((s) => ({ id: uid(), text: s.text, done: false })),
     createdAt: now, updatedAt: now, spawnedId: null,
     seriesId: t.seriesId || t.id,
@@ -1565,7 +1667,7 @@ function completeTask(t) {
   return clone;
 }
 function reopenTask(t) {
-  t.done = false; t.doneAt = null; t.updatedAt = Date.now();
+  t.done = false; t.doneAt = null; touch(t);
   if (t.spawnedId) {
     const s = byId(t.spawnedId);
     if (s && !s.done && s.createdAt === s.updatedAt) { state.tasks = state.tasks.filter((x) => x.id !== s.id); state.deleted[s.id] = Date.now(); }
@@ -2015,7 +2117,7 @@ function bindMatrix() {
     const tri = e.target.closest('[data-tri]');
     if (tri) {
       const v = tri.dataset.tri === 'true';
-      commit(() => { t.matrix.important = v; t.updatedAt = Date.now(); }, { undo: v ? 'Marquée importante' : 'Marquée pas importante' });
+      commit(() => { t.matrix.important = v; touch(t); }, { undo: v ? 'Marquée importante' : 'Marquée pas importante' });
       const q = quadrantOf(t);
       const el = rowEl(t.id);
       if (el && !reducedMotion()) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1400); }
@@ -2084,7 +2186,7 @@ function bindMatrix() {
         const idx = rest.indexOf(tg.card.dataset.id) + (tg.after ? 1 : 0);
         placeAt(order, t.id, idx);
       }
-      t.updatedAt = Date.now();
+      touch(t);
     }, { undo: before === q ? 'Changement de priorité' : 'Changement de cadran', detail: false });
     if (byId(ui.selectedId) && ui.selectedId === t.id) updateDetailBits(t);
     const el = rowEl(t.id);
@@ -2304,7 +2406,7 @@ function renderDetail() {
     </section>
     <section class="block" aria-labelledby="hNotes">
       <div class="blockHead"><h3 id="hNotes">Notes</h3></div>
-      <textarea class="notes" id="dNotes" data-k="notes" aria-labelledby="hNotes" placeholder="Contexte, interlocuteurs, chemins de fichiers, liens, ce qu'il ne faut pas oublier…">${esc(t.notes)}</textarea>
+      <textarea class="notes" id="dNotes" data-k="notes" maxlength="100000" aria-labelledby="hNotes" placeholder="Contexte, interlocuteurs, chemins de fichiers, liens, ce qu'il ne faut pas oublier…">${esc(t.notes)}</textarea>
       <div class="links" id="dLinks"></div>
     </section>
     <footer class="dMeta" id="dMeta"></footer>
@@ -2474,7 +2576,7 @@ function bindDetail() {
       const flat = el.value.replace(/[\r\n]+/g, ' ');
       if (flat !== el.value) el.value = flat;
       const v = nfc(flat);
-      commit(() => { t.title = v; t.updatedAt = Date.now(); }, {
+      commit(() => { t.title = v; touch(t); }, {
         undo: 'Modification du titre', coalesce: `title:${t.id}`, detail: false,
         light: () => { const r = rowEl(t.id); const el = r && r.querySelector('.title, .mtitle'); if (el) el.innerHTML = t.title ? esc(t.title) : '<span class="untitled">Sans titre</span>'; },
       });
@@ -2482,21 +2584,21 @@ function bindDetail() {
       autosize(el);
       const hadNotes = !!t.notes.trim();
       const nv = nfc(el.value);
-      commit(() => { t.notes = nv; t.updatedAt = Date.now(); }, {
+      commit(() => { t.notes = nv; touch(t); }, {
         undo: 'Modification des notes', coalesce: `notes:${t.id}`, detail: false,
         light: hadNotes === !!nv.trim() ? () => {} : null, // l'icône « notes » n'apparaît ou ne disparaît que rarement
       });
       linksLater(t);
     } else if (k.startsWith('step:')) {
       const s = t.steps.find((x) => x.id === k.slice(5)); if (!s) return;
-      commit(() => { s.text = nfc(el.value); t.updatedAt = Date.now(); }, { undo: "Modification d'une étape", coalesce: k, detail: false, light: () => {} });
+      commit(() => { s.text = nfc(el.value); touch(t); }, { undo: "Modification d'une étape", coalesce: k, detail: false, light: () => {} });
     } else if (k === 'nth') {
       const n = parseInt(el.value, 10);
       if (!(n >= 1 && n <= 23)) return;
       commit(() => {
         t.repeat = { type: 'nth', n };
         shiftDue(t, nextOccurrence(t.repeat, todayISO(), true));
-        t.updatedAt = Date.now();
+        touch(t);
       }, { undo: 'Répétition modifiée', coalesce: `nth:${t.id}`, detail: false });
       updateDetailBits(t);
     }
@@ -2529,13 +2631,13 @@ function bindDetail() {
           t.repeat = makeRepeat(type, anchor, n);
           if (type === 'workday' || type === 'nth' || type === 'last' || !t.due) shiftDue(t, nextOccurrence(t.repeat, todayISO(), true));
         }
-        t.updatedAt = Date.now();
+        touch(t);
       }, { undo: 'Répétition modifiée', detail: false });
       updateDetailBits(t);
       if (type === 'nth') $('#dNth', pane).focus();
     } else if (k.startsWith('stepchk:')) {
       const s = t.steps.find((x) => x.id === k.slice(8)); if (!s) return;
-      commit(() => { s.done = el.checked; t.updatedAt = Date.now(); }, { undo: el.checked ? 'Étape cochée' : 'Étape décochée', detail: false });
+      commit(() => { s.done = el.checked; touch(t); }, { undo: el.checked ? 'Étape cochée' : 'Étape décochée', detail: false });
       el.closest('.step').classList.toggle('done', s.done);
       updateDetailBits(t);
       if (t.steps.length && t.steps.every((x) => x.done) && !t.done) {
@@ -2559,7 +2661,7 @@ function bindDetail() {
       commit(() => {
         if (key === 'important' && v === null) t.matrix = { important: null, urgent: null };
         else t.matrix[key] = v;
-        t.updatedAt = Date.now();
+        touch(t);
       }, { undo: key === 'important' ? 'Importance modifiée' : 'Urgence modifiée', detail: false });
       updateMatrixBits(t);
       return;
@@ -2609,7 +2711,7 @@ function bindDetail() {
         const s = t.steps[i];
         const tail = el.value.slice(caret);
         const ns = { id: uid(), text: tail, done: false };
-        commit(() => { s.text = el.value.slice(0, caret); t.steps.splice(i + 1, 0, ns); t.updatedAt = Date.now(); }, { undo: 'Ajout d\'étape', detail: false });
+        commit(() => { s.text = el.value.slice(0, caret); t.steps.splice(i + 1, 0, ns); touch(t); }, { undo: 'Ajout d\'étape', detail: false });
         renderSteps(t, { sid: ns.id, at: 'start' });
         updateDetailBits(t);
       } else if (e.key === 'Backspace' && el.selectionStart === 0 && el.selectionEnd === 0) {
@@ -2618,7 +2720,7 @@ function bindDetail() {
           e.preventDefault();
           const prev = t.steps[i - 1];
           const at = prev.text.length;
-          commit(() => { prev.text += el.value; t.steps.splice(i, 1); t.updatedAt = Date.now(); }, { undo: 'Fusion d\'étapes', detail: false });
+          commit(() => { prev.text += el.value; t.steps.splice(i, 1); touch(t); }, { undo: 'Fusion d\'étapes', detail: false });
           renderSteps(t);
           const pe = els.detail.querySelector(`[data-k="step:${CSS.escape(prev.id)}"]`);
           if (pe) { pe.focus(); pe.setSelectionRange(at, at); }
@@ -2628,7 +2730,7 @@ function bindDetail() {
         e.preventDefault();
         const j = i + (e.key === 'ArrowUp' ? -1 : 1);
         if (j < 0 || j >= t.steps.length) return;
-        commit(() => { const [s] = t.steps.splice(i, 1); t.steps.splice(j, 0, s); t.updatedAt = Date.now(); }, { undo: 'Déplacement d\'étape', detail: false });
+        commit(() => { const [s] = t.steps.splice(i, 1); t.steps.splice(j, 0, s); touch(t); }, { undo: 'Déplacement d\'étape', detail: false });
         renderSteps(t, { sid, at: 'end' });
       } else if (e.key === 'ArrowUp' && !e.altKey) {
         if (i > 0) { e.preventDefault(); focusStep(t.steps[i - 1].id); }
@@ -2664,14 +2766,14 @@ function focusStep(sid) {
   if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
 }
 function addSteps(t, texts) {
-  commit(() => { for (const x of texts) t.steps.push({ id: uid(), text: nfc(x).slice(0, 300), done: false }); t.updatedAt = Date.now(); }, { undo: texts.length > 1 ? 'Ajout d\'étapes' : 'Ajout d\'étape', detail: false });
+  commit(() => { for (const x of texts) t.steps.push({ id: uid(), text: nfc(x).slice(0, 300), done: false }); touch(t); }, { undo: texts.length > 1 ? 'Ajout d\'étapes' : 'Ajout d\'étape', detail: false });
   renderSteps(t);
   updateDetailBits(t);
 }
 function removeStep(t, sid, focusWhere) {
   const i = t.steps.findIndex((s) => s.id === sid);
   if (i < 0) return;
-  commit(() => { t.steps.splice(i, 1); t.updatedAt = Date.now(); }, { undo: "Suppression d'étape", detail: false });
+  commit(() => { t.steps.splice(i, 1); touch(t); }, { undo: "Suppression d'étape", detail: false });
   renderSteps(t);
   updateDetailBits(t);
   const target = focusWhere === 'prev' ? t.steps[i - 1] : (t.steps[i] || t.steps[i - 1]);
@@ -2689,7 +2791,7 @@ function remindPreset(t, kind) {
 function setRemind(t, v) {
   commit(() => {
     t.remind = v ? makeRemind(v.date, v.time) : null;
-    t.updatedAt = Date.now();
+    touch(t);
   }, { undo: v ? 'Rappel modifié' : 'Rappel retiré', detail: false });
   updateDetailBits(t);
   reminders.refresh();
@@ -2700,7 +2802,7 @@ function setDue(t, v) {
     shiftDue(t, v);
     if (!v) t.repeat = null;
     else if (t.repeat && (t.repeat.type === 'weekly' || t.repeat.type === 'monthly')) t.repeat = makeRepeat(t.repeat.type, v);
-    t.updatedAt = Date.now();
+    touch(t);
   }, { undo: v ? 'Échéance modifiée' : 'Échéance retirée', detail: false });
   updateDetailBits(t);
 }
@@ -2907,13 +3009,13 @@ const reminders = {
     const t = byId(id);
     if (!t || !t.remind) { this.refresh(); return; }
     this.closeNote(id);
-    if (how === 'done') { commit(() => { t.remind.ack = true; }, { undo: false, detail: false }); setDone(id, true); }
+    if (how === 'done') { commit(() => { t.remind.ack = true; touch(t); }, { undo: false, detail: false }); setDone(id, true); }
     else if (how === 'open' || how === 'ok') {
-      commit(() => { t.remind.ack = true; }, { undo: false, detail: false });
+      commit(() => { t.remind.ack = true; touch(t); }, { undo: false, detail: false });
       if (how === 'open') { window.focus(); if (ui.view === 'done') setView('todo'); select(id, { open: true }); }
     } else if (how.startsWith('snz:')) {
       const ms = snoozeTarget(how.slice(4));
-      commit(() => { t.remind.snooze = ms; t.remind.ack = false; }, { undo: false, detail: false });
+      commit(() => { t.remind.snooze = ms; t.remind.ack = false; touch(t); }, { undo: false, detail: false });
       toast(`Rappel reporté ${fmtWhenLong(ms)}.`);
     }
     const sel = byId(ui.selectedId); if (sel) updateDetailBits(sel);
@@ -3136,6 +3238,7 @@ const pwa = {
     const q = new URLSearchParams(location.search);
     if (q.has('nouvelle')) setTimeout(() => els.qa.focus(), 50);
     if (q.get('vue') === 'aujourdhui') setTimeout(() => setView('today'), 0);
+    if (q.get('tache')) { const id = q.get('tache'); setTimeout(() => openTaskFromNotification(id), 0); }
     if (q.toString()) { try { history.replaceState(history.state, '', location.pathname); } catch (e) { /* ignore */ } }
     this.render();
   },
@@ -3146,6 +3249,10 @@ const pwa = {
     });
   },
   async install() {
+    if (isIos()) {
+      toast('Sur iPhone : touchez le bouton Partager de Safari (le carré avec une flèche), puis « Sur l\'écran d\'accueil ». Ouvrez ensuite To do list depuis son icône.', { duration: 14000 });
+      return;
+    }
     if (!this.promptEvent) {
       toast('Pour installer : cliquez sur l\'icône d\'installation à droite de la barre d\'adresse de Chrome, ou menu ⋮, puis « Caster, enregistrer et partager », puis « Installer la page en tant qu\'application ».', { duration: 12000 });
       return;
@@ -3159,7 +3266,9 @@ const pwa = {
     const card = $('#installCard');
     if (!card) return;
     const later = +(lsGet(KEY_INSTALL_LATER) || 0);
-    card.hidden = !(this.web && !this.standalone() && this.promptEvent && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000);
+    const ios = isIos() && !this.standalone();
+    card.hidden = !(this.web && !this.standalone() && (this.promptEvent || ios) && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000);
+    card.classList.toggle('ios', ios);
     renderSetupCard();
     // Réglages
     const sec = $('#setAppSec');
@@ -3188,16 +3297,26 @@ const KEY_SETUP_LATER = 'odj.setup.later';
 function renderSetupCard() {
   const el = $('#setupCard');
   if (!el) return;
+  const sc = $('#syncCard');
+  if (sc) {
+    const later = +(lsGet('odj.synccard.later') || 0);
+    sc.hidden = !(typeof cloud !== 'undefined' && cloud.enabled && !cloud.isOn() && !fileSync.supported && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000);
+  }
   el.hidden = !setupCardWanted();
 }
 function setupCardWanted() {
   const later = +(lsGet(KEY_SETUP_LATER) || 0);
   const installPending = typeof pwa !== 'undefined' && !$('#installCard').hidden;
-  return fileSync.supported && !fileSync.handle && !!fileSync.ready && !installPending && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000;
+  const cloudOn = typeof cloud !== 'undefined' && cloud.isOn();
+  return fileSync.supported && !fileSync.handle && !!fileSync.ready && !installPending && !cloudOn && ui.view === 'todo' && !ui.query.trim() && Date.now() - later > 3 * 86400000;
 }
 function renderStatus() {
   renderSetupCard();
-  const s = fileSync.status();
+  let s = fileSync.status();
+  if (typeof cloud !== 'undefined' && cloud.enabled && (cloud.isOn() || cloud.status === 'signedout')) {
+    const c = cloud.statusLine();
+    if (!(c.tone === 'ok' && (s.tone === 'warn' || s.tone === 'err'))) s = c;
+  }
   const el = els.status;
   el.className = `status ${s.tone}`;
   el.innerHTML = `${icon(s.icon)}<span class="msg" title="${esc(s.title || s.text)}">${esc(s.text)}</span><span class="grow"></span>${s.action ? `<button type="button" class="linkBtn" data-status-act="${s.action.id}">${esc(s.action.label)}</button>` : ''}`;
@@ -3396,13 +3515,14 @@ const fileSync = {
     state.deleted = merged.deleted;
     const changedHere = !sameTasks(merged.tasks, state.tasks);
     if (changedHere) {
-      loadData({ tasks: merged.tasks, settings: data.savedAt > state.savedAt ? data.settings : state.settings, savedAt: 0, deleted: merged.deleted }, 'Fusion avec le fichier', { undoable: true });
+      const cloudOn = typeof cloud !== 'undefined' && cloud.isOn();
+      loadData({ tasks: merged.tasks, settings: data.savedAt > state.savedAt ? data.settings : state.settings, savedAt: 0, deleted: merged.deleted }, 'Fusion avec le fichier', { undoable: !cloudOn });
       persist();
       const bits = [];
       if (merged.added) bits.push(plural(merged.added, 'tâche ajoutée', 'tâches ajoutées'));
       if (merged.updated) bits.push(plural(merged.updated, 'tâche mise à jour', 'tâches mises à jour'));
       if (merged.removed) bits.push(plural(merged.removed, 'tâche supprimée', 'tâches supprimées'));
-      toast(`Modifications reprises depuis ${this.handle.name} : ${bits.join(', ') || 'liste mise à jour'}.`, { action: 'Annuler', onAction: undo, duration: 9000 });
+      toast(`Modifications reprises depuis ${this.handle.name} : ${bits.join(', ') || 'liste mise à jour'}.`, cloudOn ? { duration: 9000 } : { action: 'Annuler', onAction: undo, duration: 9000 });
     }
     if (!sameTasks(merged.tasks, data.tasks)) await this.writeNow({ force: true });
     else this.lastWrite = Date.now();
@@ -3514,6 +3634,7 @@ function loadData(data, label, { undoable = true } = {}) {
   state.tasks = data.tasks;
   if (data.deleted) state.deleted = { ...data.deleted };
   state.settings = { ...state.settings, ...data.settings };
+  if (data.settingsAt) state.settingsAt = Math.max(data.settingsAt, state.settingsAt || 0);
   state.savedAt = Math.max(data.savedAt || 0, state.savedAt);
   applyTheme();
   saveLocal();
@@ -3571,7 +3692,7 @@ async function importFile(file) {
   });
   if (!choice || choice === 'cancel') return;
   if (choice === 'replace') {
-    commit(() => { state.tasks = keepRemindRuntime(data.tasks, state.tasks); }, { undo: 'Import' });
+    commit(() => { const prev = state.tasks; state.tasks = keepRemindRuntime(data.tasks, prev); stampDiff(prev, state.tasks); }, { undo: 'Import' });
   } else {
     let added = 0, updated = 0;
     commit(() => {
@@ -3686,6 +3807,7 @@ function refreshSettings() {
   $('#prefRemSticky').checked = state.settings.remindSticky;
   reminders.renderSettings();
   pwa.render();
+  renderSyncSettings();
 }
 function bindSettings() {
   const dlg = $('#dlgSettings');
@@ -3709,7 +3831,7 @@ function bindSettings() {
       });
       if (ok !== 'ok') return;
       const data = normData({ tasks: s.tasks });
-      commit(() => { state.tasks = keepRemindRuntime(data.tasks, state.tasks); }, { undo: 'Restauration' });
+      commit(() => { const prev = state.tasks; state.tasks = keepRemindRuntime(data.tasks, prev); stampDiff(prev, state.tasks); }, { undo: 'Restauration' });
       dlg.close();
       toast(`Liste restaurée au ${longDate(s.day)}.`, { action: 'Annuler', onAction: undo });
     } else if ('close' in b.dataset) dlg.close();
@@ -3956,7 +4078,7 @@ function onKey(e) {
       if (!t || t.done) return;
       e.preventDefault();
       const v = t.matrix.important !== true;
-      commit(() => { t.matrix.important = v; t.updatedAt = Date.now(); }, { undo: v ? 'Marquée importante' : 'Marquée pas importante' });
+      commit(() => { t.matrix.important = v; touch(t); }, { undo: v ? 'Marquée importante' : 'Marquée pas importante' });
       toast(`${v ? 'Importante' : 'Pas importante'} : ${QUADS[quadrantOf(t)].title.toLowerCase()}.`);
       return;
     }
@@ -3966,7 +4088,7 @@ function onKey(e) {
       e.preventDefault();
       const a = autoUrgent(t);
       const next = t.matrix.urgent === null ? !a : null; // automatique → forcé à l'inverse → automatique
-      commit(() => { t.matrix.urgent = next; t.updatedAt = Date.now(); }, { undo: 'Urgence modifiée' });
+      commit(() => { t.matrix.urgent = next; touch(t); }, { undo: 'Urgence modifiée' });
       toast(next === null ? `Urgence automatique : ${a ? 'urgente' : 'pas urgente'} selon l'échéance.` : (next ? 'Forcée urgente.' : 'Forcée pas urgente.'));
       return;
     }
@@ -3979,6 +4101,705 @@ function onKey(e) {
       return;
     default:
   }
+}
+
+/* QR Code Generator for JavaScript, (c) 2009 Kazuhiko Arase, licence MIT (http://www.opensource.org/licenses/mit-license.php). Version 1.4.4, minifiée. */
+var qrcode=function(){var P=function(x,w){var g=236,l=17,n=x,s=O[w],t=null,r=0,h=null,i=[],v={},_=function(a,f){r=n*4+17,t=function(e){for(var u=new Array(e),o=0;o<e;o+=1){u[o]=new Array(e);for(var d=0;d<e;d+=1)u[o][d]=null}return u}(r),B(0,0),B(r-7,0),B(0,r-7),E(),T(),m(a,f),n>=7&&N(a),h==null&&(h=nr(n,s,i)),U(h,f)},B=function(a,f){for(var e=-1;e<=7;e+=1)if(!(a+e<=-1||r<=a+e))for(var u=-1;u<=7;u+=1)f+u<=-1||r<=f+u||(0<=e&&e<=6&&(u==0||u==6)||0<=u&&u<=6&&(e==0||e==6)||2<=e&&e<=4&&2<=u&&u<=4?t[a+e][f+u]=!0:t[a+e][f+u]=!1)},y=function(){for(var a=0,f=0,e=0;e<8;e+=1){_(!0,e);var u=k.getLostPoint(v);(e==0||a>u)&&(a=u,f=e)}return f},T=function(){for(var a=8;a<r-8;a+=1)t[a][6]==null&&(t[a][6]=a%2==0);for(var f=8;f<r-8;f+=1)t[6][f]==null&&(t[6][f]=f%2==0)},E=function(){for(var a=k.getPatternPosition(n),f=0;f<a.length;f+=1)for(var e=0;e<a.length;e+=1){var u=a[f],o=a[e];if(t[u][o]==null)for(var d=-2;d<=2;d+=1)for(var c=-2;c<=2;c+=1)d==-2||d==2||c==-2||c==2||d==0&&c==0?t[u+d][o+c]=!0:t[u+d][o+c]=!1}},N=function(a){for(var f=k.getBCHTypeNumber(n),e=0;e<18;e+=1){var u=!a&&(f>>e&1)==1;t[Math.floor(e/3)][e%3+r-8-3]=u}for(var e=0;e<18;e+=1){var u=!a&&(f>>e&1)==1;t[e%3+r-8-3][Math.floor(e/3)]=u}},m=function(a,f){for(var e=s<<3|f,u=k.getBCHTypeInfo(e),o=0;o<15;o+=1){var d=!a&&(u>>o&1)==1;o<6?t[o][8]=d:o<8?t[o+1][8]=d:t[r-15+o][8]=d}for(var o=0;o<15;o+=1){var d=!a&&(u>>o&1)==1;o<8?t[8][r-o-1]=d:o<9?t[8][15-o-1+1]=d:t[8][15-o-1]=d}t[r-8][8]=!a},U=function(a,f){for(var e=-1,u=r-1,o=7,d=0,c=k.getMaskFunction(f),p=r-1;p>0;p-=2)for(p==6&&(p-=1);;){for(var b=0;b<2;b+=1)if(t[u][p-b]==null){var C=!1;d<a.length&&(C=(a[d]>>>o&1)==1);var A=c(u,p-b);A&&(C=!C),t[u][p-b]=C,o-=1,o==-1&&(d+=1,o=7)}if(u+=e,u<0||r<=u){u-=e,e=-e;break}}},H=function(a,f){for(var e=0,u=0,o=0,d=new Array(f.length),c=new Array(f.length),p=0;p<f.length;p+=1){var b=f[p].dataCount,C=f[p].totalCount-b;u=Math.max(u,b),o=Math.max(o,C),d[p]=new Array(b);for(var A=0;A<d[p].length;A+=1)d[p][A]=255&a.getBuffer()[A+e];e+=b;var R=k.getErrorCorrectPolynomial(C),I=K(d[p],R.getLength()-1),S=I.mod(R);c[p]=new Array(R.getLength()-1);for(var A=0;A<c[p].length;A+=1){var X=A+S.getLength()-c[p].length;c[p][A]=X>=0?S.getAt(X):0}}for(var Z=0,A=0;A<f.length;A+=1)Z+=f[A].totalCount;for(var J=new Array(Z),Q=0,A=0;A<u;A+=1)for(var p=0;p<f.length;p+=1)A<d[p].length&&(J[Q]=d[p][A],Q+=1);for(var A=0;A<o;A+=1)for(var p=0;p<f.length;p+=1)A<c[p].length&&(J[Q]=c[p][A],Q+=1);return J},nr=function(a,f,e){for(var u=Y.getRSBlocks(a,f),o=G(),d=0;d<e.length;d+=1){var c=e[d];o.put(c.getMode(),4),o.put(c.getLength(),k.getLengthInBits(c.getMode(),a)),c.write(o)}for(var p=0,d=0;d<u.length;d+=1)p+=u[d].dataCount;if(o.getLengthInBits()>p*8)throw"code length overflow. ("+o.getLengthInBits()+">"+p*8+")";for(o.getLengthInBits()+4<=p*8&&o.put(0,4);o.getLengthInBits()%8!=0;)o.putBit(!1);for(;!(o.getLengthInBits()>=p*8||(o.put(g,8),o.getLengthInBits()>=p*8));)o.put(l,8);return H(o,u)};v.addData=function(a,f){f=f||"Byte";var e=null;switch(f){case"Numeric":e=$(a);break;case"Alphanumeric":e=W(a);break;case"Byte":e=V(a);break;case"Kanji":e=q(a);break;default:throw"mode:"+f}i.push(e),h=null},v.isDark=function(a,f){if(a<0||r<=a||f<0||r<=f)throw a+","+f;return t[a][f]},v.getModuleCount=function(){return r},v.make=function(){if(n<1){for(var a=1;a<40;a++){for(var f=Y.getRSBlocks(a,s),e=G(),u=0;u<i.length;u++){var o=i[u];e.put(o.getMode(),4),e.put(o.getLength(),k.getLengthInBits(o.getMode(),a)),o.write(e)}for(var d=0,u=0;u<f.length;u++)d+=f[u].dataCount;if(e.getLengthInBits()<=d*8)break}n=a}_(!1,y())},v.createTableTag=function(a,f){a=a||2,f=typeof f>"u"?a*4:f;var e="";e+='<table style="',e+=" border-width: 0px; border-style: none;",e+=" border-collapse: collapse;",e+=" padding: 0px; margin: "+f+"px;",e+='">',e+="<tbody>";for(var u=0;u<v.getModuleCount();u+=1){e+="<tr>";for(var o=0;o<v.getModuleCount();o+=1)e+='<td style="',e+=" border-width: 0px; border-style: none;",e+=" border-collapse: collapse;",e+=" padding: 0px; margin: 0px;",e+=" width: "+a+"px;",e+=" height: "+a+"px;",e+=" background-color: ",e+=v.isDark(u,o)?"#000000":"#ffffff",e+=";",e+='"/>';e+="</tr>"}return e+="</tbody>",e+="</table>",e},v.createSvgTag=function(a,f,e,u){var o={};typeof arguments[0]=="object"&&(o=arguments[0],a=o.cellSize,f=o.margin,e=o.alt,u=o.title),a=a||2,f=typeof f>"u"?a*4:f,e=typeof e=="string"?{text:e}:e||{},e.text=e.text||null,e.id=e.text?e.id||"qrcode-description":null,u=typeof u=="string"?{text:u}:u||{},u.text=u.text||null,u.id=u.text?u.id||"qrcode-title":null;var d=v.getModuleCount()*a+f*2,c,p,b,C,A="",R;for(R="l"+a+",0 0,"+a+" -"+a+",0 0,-"+a+"z ",A+='<svg version="1.1" xmlns="http://www.w3.org/2000/svg"',A+=o.scalable?"":' width="'+d+'px" height="'+d+'px"',A+=' viewBox="0 0 '+d+" "+d+'" ',A+=' preserveAspectRatio="xMinYMin meet"',A+=u.text||e.text?' role="img" aria-labelledby="'+F([u.id,e.id].join(" ").trim())+'"':"",A+=">",A+=u.text?'<title id="'+F(u.id)+'">'+F(u.text)+"</title>":"",A+=e.text?'<description id="'+F(e.id)+'">'+F(e.text)+"</description>":"",A+='<rect width="100%" height="100%" fill="white" cx="0" cy="0"/>',A+='<path d="',b=0;b<v.getModuleCount();b+=1)for(C=b*a+f,c=0;c<v.getModuleCount();c+=1)v.isDark(b,c)&&(p=c*a+f,A+="M"+p+","+C+R);return A+='" stroke="transparent" fill="black"/>',A+="</svg>",A},v.createDataURL=function(a,f){a=a||2,f=typeof f>"u"?a*4:f;var e=v.getModuleCount()*a+f*2,u=f,o=e-f;return er(e,e,function(d,c){if(u<=d&&d<o&&u<=c&&c<o){var p=Math.floor((d-u)/a),b=Math.floor((c-u)/a);return v.isDark(b,p)?0:1}else return 1})},v.createImgTag=function(a,f,e){a=a||2,f=typeof f>"u"?a*4:f;var u=v.getModuleCount()*a+f*2,o="";return o+="<img",o+=' src="',o+=v.createDataURL(a,f),o+='"',o+=' width="',o+=u,o+='"',o+=' height="',o+=u,o+='"',e&&(o+=' alt="',o+=F(e),o+='"'),o+="/>",o};var F=function(a){for(var f="",e=0;e<a.length;e+=1){var u=a.charAt(e);switch(u){case"<":f+="&lt;";break;case">":f+="&gt;";break;case"&":f+="&amp;";break;case'"':f+="&quot;";break;default:f+=u;break}}return f},ar=function(a){var f=1;a=typeof a>"u"?f*2:a;var e=v.getModuleCount()*f+a*2,u=a,o=e-a,d,c,p,b,C,A={"\u2588\u2588":"\u2588","\u2588 ":"\u2580"," \u2588":"\u2584","  ":" "},R={"\u2588\u2588":"\u2580","\u2588 ":"\u2580"," \u2588":" ","  ":" "},I="";for(d=0;d<e;d+=2){for(p=Math.floor((d-u)/f),b=Math.floor((d+1-u)/f),c=0;c<e;c+=1)C="\u2588",u<=c&&c<o&&u<=d&&d<o&&v.isDark(p,Math.floor((c-u)/f))&&(C=" "),u<=c&&c<o&&u<=d+1&&d+1<o&&v.isDark(b,Math.floor((c-u)/f))?C+=" ":C+="\u2588",I+=a<1&&d+1>=o?R[C]:A[C];I+=`
+`}return e%2&&a>0?I.substring(0,I.length-e-1)+Array(e+1).join("\u2580"):I.substring(0,I.length-1)};return v.createASCII=function(a,f){if(a=a||1,a<2)return ar(f);a-=1,f=typeof f>"u"?a*2:f;var e=v.getModuleCount()*a+f*2,u=f,o=e-f,d,c,p,b,C=Array(a+1).join("\u2588\u2588"),A=Array(a+1).join("  "),R="",I="";for(d=0;d<e;d+=1){for(p=Math.floor((d-u)/a),I="",c=0;c<e;c+=1)b=1,u<=c&&c<o&&u<=d&&d<o&&v.isDark(p,Math.floor((c-u)/a))&&(b=0),I+=b?C:A;for(p=0;p<a;p+=1)R+=I+`
+`}return R.substring(0,R.length-1)},v.renderTo2dContext=function(a,f){f=f||2;for(var e=v.getModuleCount(),u=0;u<e;u++)for(var o=0;o<e;o++)a.fillStyle=v.isDark(u,o)?"black":"white",a.fillRect(u*f,o*f,f,f)},v};P.stringToBytesFuncs={default:function(x){for(var w=[],g=0;g<x.length;g+=1){var l=x.charCodeAt(g);w.push(l&255)}return w}},P.stringToBytes=P.stringToBytesFuncs.default,P.createStringToBytes=function(x,w){var g=function(){for(var n=rr(x),s=function(){var T=n.read();if(T==-1)throw"eof";return T},t=0,r={};;){var h=n.read();if(h==-1)break;var i=s(),v=s(),_=s(),B=String.fromCharCode(h<<8|i),y=v<<8|_;r[B]=y,t+=1}if(t!=w)throw t+" != "+w;return r}(),l=63;return function(n){for(var s=[],t=0;t<n.length;t+=1){var r=n.charCodeAt(t);if(r<128)s.push(r);else{var h=g[n.charAt(t)];typeof h=="number"?(h&255)==h?s.push(h):(s.push(h>>>8),s.push(h&255)):s.push(l)}}return s}};var D={MODE_NUMBER:1,MODE_ALPHA_NUM:2,MODE_8BIT_BYTE:4,MODE_KANJI:8},O={L:1,M:0,Q:3,H:2},L={PATTERN000:0,PATTERN001:1,PATTERN010:2,PATTERN011:3,PATTERN100:4,PATTERN101:5,PATTERN110:6,PATTERN111:7},k=function(){var x=[[],[6,18],[6,22],[6,26],[6,30],[6,34],[6,22,38],[6,24,42],[6,26,46],[6,28,50],[6,30,54],[6,32,58],[6,34,62],[6,26,46,66],[6,26,48,70],[6,26,50,74],[6,30,54,78],[6,30,56,82],[6,30,58,86],[6,34,62,90],[6,28,50,72,94],[6,26,50,74,98],[6,30,54,78,102],[6,28,54,80,106],[6,32,58,84,110],[6,30,58,86,114],[6,34,62,90,118],[6,26,50,74,98,122],[6,30,54,78,102,126],[6,26,52,78,104,130],[6,30,56,82,108,134],[6,34,60,86,112,138],[6,30,58,86,114,142],[6,34,62,90,118,146],[6,30,54,78,102,126,150],[6,24,50,76,102,128,154],[6,28,54,80,106,132,158],[6,32,58,84,110,136,162],[6,26,54,82,110,138,166],[6,30,58,86,114,142,170]],w=1335,g=7973,l=21522,n={},s=function(t){for(var r=0;t!=0;)r+=1,t>>>=1;return r};return n.getBCHTypeInfo=function(t){for(var r=t<<10;s(r)-s(w)>=0;)r^=w<<s(r)-s(w);return(t<<10|r)^l},n.getBCHTypeNumber=function(t){for(var r=t<<12;s(r)-s(g)>=0;)r^=g<<s(r)-s(g);return t<<12|r},n.getPatternPosition=function(t){return x[t-1]},n.getMaskFunction=function(t){switch(t){case L.PATTERN000:return function(r,h){return(r+h)%2==0};case L.PATTERN001:return function(r,h){return r%2==0};case L.PATTERN010:return function(r,h){return h%3==0};case L.PATTERN011:return function(r,h){return(r+h)%3==0};case L.PATTERN100:return function(r,h){return(Math.floor(r/2)+Math.floor(h/3))%2==0};case L.PATTERN101:return function(r,h){return r*h%2+r*h%3==0};case L.PATTERN110:return function(r,h){return(r*h%2+r*h%3)%2==0};case L.PATTERN111:return function(r,h){return(r*h%3+(r+h)%2)%2==0};default:throw"bad maskPattern:"+t}},n.getErrorCorrectPolynomial=function(t){for(var r=K([1],0),h=0;h<t;h+=1)r=r.multiply(K([1,M.gexp(h)],0));return r},n.getLengthInBits=function(t,r){if(1<=r&&r<10)switch(t){case D.MODE_NUMBER:return 10;case D.MODE_ALPHA_NUM:return 9;case D.MODE_8BIT_BYTE:return 8;case D.MODE_KANJI:return 8;default:throw"mode:"+t}else if(r<27)switch(t){case D.MODE_NUMBER:return 12;case D.MODE_ALPHA_NUM:return 11;case D.MODE_8BIT_BYTE:return 16;case D.MODE_KANJI:return 10;default:throw"mode:"+t}else if(r<41)switch(t){case D.MODE_NUMBER:return 14;case D.MODE_ALPHA_NUM:return 13;case D.MODE_8BIT_BYTE:return 16;case D.MODE_KANJI:return 12;default:throw"mode:"+t}else throw"type:"+r},n.getLostPoint=function(t){for(var r=t.getModuleCount(),h=0,i=0;i<r;i+=1)for(var v=0;v<r;v+=1){for(var _=0,B=t.isDark(i,v),y=-1;y<=1;y+=1)if(!(i+y<0||r<=i+y))for(var T=-1;T<=1;T+=1)v+T<0||r<=v+T||y==0&&T==0||B==t.isDark(i+y,v+T)&&(_+=1);_>5&&(h+=3+_-5)}for(var i=0;i<r-1;i+=1)for(var v=0;v<r-1;v+=1){var E=0;t.isDark(i,v)&&(E+=1),t.isDark(i+1,v)&&(E+=1),t.isDark(i,v+1)&&(E+=1),t.isDark(i+1,v+1)&&(E+=1),(E==0||E==4)&&(h+=3)}for(var i=0;i<r;i+=1)for(var v=0;v<r-6;v+=1)t.isDark(i,v)&&!t.isDark(i,v+1)&&t.isDark(i,v+2)&&t.isDark(i,v+3)&&t.isDark(i,v+4)&&!t.isDark(i,v+5)&&t.isDark(i,v+6)&&(h+=40);for(var v=0;v<r;v+=1)for(var i=0;i<r-6;i+=1)t.isDark(i,v)&&!t.isDark(i+1,v)&&t.isDark(i+2,v)&&t.isDark(i+3,v)&&t.isDark(i+4,v)&&!t.isDark(i+5,v)&&t.isDark(i+6,v)&&(h+=40);for(var N=0,v=0;v<r;v+=1)for(var i=0;i<r;i+=1)t.isDark(i,v)&&(N+=1);var m=Math.abs(100*N/r/r-50)/5;return h+=m*10,h},n}(),M=function(){for(var x=new Array(256),w=new Array(256),g=0;g<8;g+=1)x[g]=1<<g;for(var g=8;g<256;g+=1)x[g]=x[g-4]^x[g-5]^x[g-6]^x[g-8];for(var g=0;g<255;g+=1)w[x[g]]=g;var l={};return l.glog=function(n){if(n<1)throw"glog("+n+")";return w[n]},l.gexp=function(n){for(;n<0;)n+=255;for(;n>=256;)n-=255;return x[n]},l}();function K(x,w){if(typeof x.length>"u")throw x.length+"/"+w;var g=function(){for(var n=0;n<x.length&&x[n]==0;)n+=1;for(var s=new Array(x.length-n+w),t=0;t<x.length-n;t+=1)s[t]=x[t+n];return s}(),l={};return l.getAt=function(n){return g[n]},l.getLength=function(){return g.length},l.multiply=function(n){for(var s=new Array(l.getLength()+n.getLength()-1),t=0;t<l.getLength();t+=1)for(var r=0;r<n.getLength();r+=1)s[t+r]^=M.gexp(M.glog(l.getAt(t))+M.glog(n.getAt(r)));return K(s,0)},l.mod=function(n){if(l.getLength()-n.getLength()<0)return l;for(var s=M.glog(l.getAt(0))-M.glog(n.getAt(0)),t=new Array(l.getLength()),r=0;r<l.getLength();r+=1)t[r]=l.getAt(r);for(var r=0;r<n.getLength();r+=1)t[r]^=M.gexp(M.glog(n.getAt(r))+s);return K(t,0).mod(n)},l}var Y=function(){var x=[[1,26,19],[1,26,16],[1,26,13],[1,26,9],[1,44,34],[1,44,28],[1,44,22],[1,44,16],[1,70,55],[1,70,44],[2,35,17],[2,35,13],[1,100,80],[2,50,32],[2,50,24],[4,25,9],[1,134,108],[2,67,43],[2,33,15,2,34,16],[2,33,11,2,34,12],[2,86,68],[4,43,27],[4,43,19],[4,43,15],[2,98,78],[4,49,31],[2,32,14,4,33,15],[4,39,13,1,40,14],[2,121,97],[2,60,38,2,61,39],[4,40,18,2,41,19],[4,40,14,2,41,15],[2,146,116],[3,58,36,2,59,37],[4,36,16,4,37,17],[4,36,12,4,37,13],[2,86,68,2,87,69],[4,69,43,1,70,44],[6,43,19,2,44,20],[6,43,15,2,44,16],[4,101,81],[1,80,50,4,81,51],[4,50,22,4,51,23],[3,36,12,8,37,13],[2,116,92,2,117,93],[6,58,36,2,59,37],[4,46,20,6,47,21],[7,42,14,4,43,15],[4,133,107],[8,59,37,1,60,38],[8,44,20,4,45,21],[12,33,11,4,34,12],[3,145,115,1,146,116],[4,64,40,5,65,41],[11,36,16,5,37,17],[11,36,12,5,37,13],[5,109,87,1,110,88],[5,65,41,5,66,42],[5,54,24,7,55,25],[11,36,12,7,37,13],[5,122,98,1,123,99],[7,73,45,3,74,46],[15,43,19,2,44,20],[3,45,15,13,46,16],[1,135,107,5,136,108],[10,74,46,1,75,47],[1,50,22,15,51,23],[2,42,14,17,43,15],[5,150,120,1,151,121],[9,69,43,4,70,44],[17,50,22,1,51,23],[2,42,14,19,43,15],[3,141,113,4,142,114],[3,70,44,11,71,45],[17,47,21,4,48,22],[9,39,13,16,40,14],[3,135,107,5,136,108],[3,67,41,13,68,42],[15,54,24,5,55,25],[15,43,15,10,44,16],[4,144,116,4,145,117],[17,68,42],[17,50,22,6,51,23],[19,46,16,6,47,17],[2,139,111,7,140,112],[17,74,46],[7,54,24,16,55,25],[34,37,13],[4,151,121,5,152,122],[4,75,47,14,76,48],[11,54,24,14,55,25],[16,45,15,14,46,16],[6,147,117,4,148,118],[6,73,45,14,74,46],[11,54,24,16,55,25],[30,46,16,2,47,17],[8,132,106,4,133,107],[8,75,47,13,76,48],[7,54,24,22,55,25],[22,45,15,13,46,16],[10,142,114,2,143,115],[19,74,46,4,75,47],[28,50,22,6,51,23],[33,46,16,4,47,17],[8,152,122,4,153,123],[22,73,45,3,74,46],[8,53,23,26,54,24],[12,45,15,28,46,16],[3,147,117,10,148,118],[3,73,45,23,74,46],[4,54,24,31,55,25],[11,45,15,31,46,16],[7,146,116,7,147,117],[21,73,45,7,74,46],[1,53,23,37,54,24],[19,45,15,26,46,16],[5,145,115,10,146,116],[19,75,47,10,76,48],[15,54,24,25,55,25],[23,45,15,25,46,16],[13,145,115,3,146,116],[2,74,46,29,75,47],[42,54,24,1,55,25],[23,45,15,28,46,16],[17,145,115],[10,74,46,23,75,47],[10,54,24,35,55,25],[19,45,15,35,46,16],[17,145,115,1,146,116],[14,74,46,21,75,47],[29,54,24,19,55,25],[11,45,15,46,46,16],[13,145,115,6,146,116],[14,74,46,23,75,47],[44,54,24,7,55,25],[59,46,16,1,47,17],[12,151,121,7,152,122],[12,75,47,26,76,48],[39,54,24,14,55,25],[22,45,15,41,46,16],[6,151,121,14,152,122],[6,75,47,34,76,48],[46,54,24,10,55,25],[2,45,15,64,46,16],[17,152,122,4,153,123],[29,74,46,14,75,47],[49,54,24,10,55,25],[24,45,15,46,46,16],[4,152,122,18,153,123],[13,74,46,32,75,47],[48,54,24,14,55,25],[42,45,15,32,46,16],[20,147,117,4,148,118],[40,75,47,7,76,48],[43,54,24,22,55,25],[10,45,15,67,46,16],[19,148,118,6,149,119],[18,75,47,31,76,48],[34,54,24,34,55,25],[20,45,15,61,46,16]],w=function(n,s){var t={};return t.totalCount=n,t.dataCount=s,t},g={},l=function(n,s){switch(s){case O.L:return x[(n-1)*4+0];case O.M:return x[(n-1)*4+1];case O.Q:return x[(n-1)*4+2];case O.H:return x[(n-1)*4+3];default:return}};return g.getRSBlocks=function(n,s){var t=l(n,s);if(typeof t>"u")throw"bad rs block @ typeNumber:"+n+"/errorCorrectionLevel:"+s;for(var r=t.length/3,h=[],i=0;i<r;i+=1)for(var v=t[i*3+0],_=t[i*3+1],B=t[i*3+2],y=0;y<v;y+=1)h.push(w(_,B));return h},g}(),G=function(){var x=[],w=0,g={};return g.getBuffer=function(){return x},g.getAt=function(l){var n=Math.floor(l/8);return(x[n]>>>7-l%8&1)==1},g.put=function(l,n){for(var s=0;s<n;s+=1)g.putBit((l>>>n-s-1&1)==1)},g.getLengthInBits=function(){return w},g.putBit=function(l){var n=Math.floor(w/8);x.length<=n&&x.push(0),l&&(x[n]|=128>>>w%8),w+=1},g},$=function(x){var w=D.MODE_NUMBER,g=x,l={};l.getMode=function(){return w},l.getLength=function(t){return g.length},l.write=function(t){for(var r=g,h=0;h+2<r.length;)t.put(n(r.substring(h,h+3)),10),h+=3;h<r.length&&(r.length-h==1?t.put(n(r.substring(h,h+1)),4):r.length-h==2&&t.put(n(r.substring(h,h+2)),7))};var n=function(t){for(var r=0,h=0;h<t.length;h+=1)r=r*10+s(t.charAt(h));return r},s=function(t){if("0"<=t&&t<="9")return t.charCodeAt(0)-48;throw"illegal char :"+t};return l},W=function(x){var w=D.MODE_ALPHA_NUM,g=x,l={};l.getMode=function(){return w},l.getLength=function(s){return g.length},l.write=function(s){for(var t=g,r=0;r+1<t.length;)s.put(n(t.charAt(r))*45+n(t.charAt(r+1)),11),r+=2;r<t.length&&s.put(n(t.charAt(r)),6)};var n=function(s){if("0"<=s&&s<="9")return s.charCodeAt(0)-48;if("A"<=s&&s<="Z")return s.charCodeAt(0)-65+10;switch(s){case" ":return 36;case"$":return 37;case"%":return 38;case"*":return 39;case"+":return 40;case"-":return 41;case".":return 42;case"/":return 43;case":":return 44;default:throw"illegal char :"+s}};return l},V=function(x){var w=D.MODE_8BIT_BYTE,g=x,l=P.stringToBytes(x),n={};return n.getMode=function(){return w},n.getLength=function(s){return l.length},n.write=function(s){for(var t=0;t<l.length;t+=1)s.put(l[t],8)},n},q=function(x){var w=D.MODE_KANJI,g=x,l=P.stringToBytesFuncs.SJIS;if(!l)throw"sjis not supported.";(function(t,r){var h=l(t);if(h.length!=2||(h[0]<<8|h[1])!=r)throw"sjis not supported."})("\u53CB",38726);var n=l(x),s={};return s.getMode=function(){return w},s.getLength=function(t){return~~(n.length/2)},s.write=function(t){for(var r=n,h=0;h+1<r.length;){var i=(255&r[h])<<8|255&r[h+1];if(33088<=i&&i<=40956)i-=33088;else if(57408<=i&&i<=60351)i-=49472;else throw"illegal char at "+(h+1)+"/"+i;i=(i>>>8&255)*192+(i&255),t.put(i,13),h+=2}if(h<r.length)throw"illegal char at "+(h+1)},s},j=function(){var x=[],w={};return w.writeByte=function(g){x.push(g&255)},w.writeShort=function(g){w.writeByte(g),w.writeByte(g>>>8)},w.writeBytes=function(g,l,n){l=l||0,n=n||g.length;for(var s=0;s<n;s+=1)w.writeByte(g[s+l])},w.writeString=function(g){for(var l=0;l<g.length;l+=1)w.writeByte(g.charCodeAt(l))},w.toByteArray=function(){return x},w.toString=function(){var g="";g+="[";for(var l=0;l<x.length;l+=1)l>0&&(g+=","),g+=x[l];return g+="]",g},w},z=function(){var x=0,w=0,g=0,l="",n={},s=function(r){l+=String.fromCharCode(t(r&63))},t=function(r){if(!(r<0)){if(r<26)return 65+r;if(r<52)return 97+(r-26);if(r<62)return 48+(r-52);if(r==62)return 43;if(r==63)return 47}throw"n:"+r};return n.writeByte=function(r){for(x=x<<8|r&255,w+=8,g+=1;w>=6;)s(x>>>w-6),w-=6},n.flush=function(){if(w>0&&(s(x<<6-w),x=0,w=0),g%3!=0)for(var r=3-g%3,h=0;h<r;h+=1)l+="="},n.toString=function(){return l},n},rr=function(x){var w=x,g=0,l=0,n=0,s={};s.read=function(){for(;n<8;){if(g>=w.length){if(n==0)return-1;throw"unexpected end of file./"+n}var r=w.charAt(g);if(g+=1,r=="=")return n=0,-1;if(r.match(/^\s$/))continue;l=l<<6|t(r.charCodeAt(0)),n+=6}var h=l>>>n-8&255;return n-=8,h};var t=function(r){if(65<=r&&r<=90)return r-65;if(97<=r&&r<=122)return r-97+26;if(48<=r&&r<=57)return r-48+52;if(r==43)return 62;if(r==47)return 63;throw"c:"+r};return s},tr=function(x,w){var g=x,l=w,n=new Array(x*w),s={};s.setPixel=function(i,v,_){n[v*g+i]=_},s.write=function(i){i.writeString("GIF87a"),i.writeShort(g),i.writeShort(l),i.writeByte(128),i.writeByte(0),i.writeByte(0),i.writeByte(0),i.writeByte(0),i.writeByte(0),i.writeByte(255),i.writeByte(255),i.writeByte(255),i.writeString(","),i.writeShort(0),i.writeShort(0),i.writeShort(g),i.writeShort(l),i.writeByte(0);var v=2,_=r(v);i.writeByte(v);for(var B=0;_.length-B>255;)i.writeByte(255),i.writeBytes(_,B,255),B+=255;i.writeByte(_.length-B),i.writeBytes(_,B,_.length-B),i.writeByte(0),i.writeString(";")};var t=function(i){var v=i,_=0,B=0,y={};return y.write=function(T,E){if(T>>>E)throw"length over";for(;_+E>=8;)v.writeByte(255&(T<<_|B)),E-=8-_,T>>>=8-_,B=0,_=0;B=T<<_|B,_=_+E},y.flush=function(){_>0&&v.writeByte(B)},y},r=function(i){for(var v=1<<i,_=(1<<i)+1,B=i+1,y=h(),T=0;T<v;T+=1)y.add(String.fromCharCode(T));y.add(String.fromCharCode(v)),y.add(String.fromCharCode(_));var E=j(),N=t(E);N.write(v,B);var m=0,U=String.fromCharCode(n[m]);for(m+=1;m<n.length;){var H=String.fromCharCode(n[m]);m+=1,y.contains(U+H)?U=U+H:(N.write(y.indexOf(U),B),y.size()<4095&&(y.size()==1<<B&&(B+=1),y.add(U+H)),U=H)}return N.write(y.indexOf(U),B),N.write(_,B),N.flush(),E.toByteArray()},h=function(){var i={},v=0,_={};return _.add=function(B){if(_.contains(B))throw"dup key:"+B;i[B]=v,v+=1},_.size=function(){return v},_.indexOf=function(B){return i[B]},_.contains=function(B){return typeof i[B]<"u"},_};return s},er=function(x,w,g){for(var l=tr(x,w),n=0;n<w;n+=1)for(var s=0;s<x;s+=1)l.setPixel(s,n,g(s,n));var t=j();l.write(t);for(var r=z(),h=t.toByteArray(),i=0;i<h.length;i+=1)r.writeByte(h[i]);return r.flush(),"data:image/gif;base64,"+r};return P}();(function(){qrcode.stringToBytesFuncs["UTF-8"]=function(P){function D(O){for(var L=[],k=0;k<O.length;k++){var M=O.charCodeAt(k);M<128?L.push(M):M<2048?L.push(192|M>>6,128|M&63):M<55296||M>=57344?L.push(224|M>>12,128|M>>6&63,128|M&63):(k++,M=65536+((M&1023)<<10|O.charCodeAt(k)&1023),L.push(240|M>>18,128|M>>12&63,128|M>>6&63,128|M&63))}return L}return D(P)}})(),function(P){typeof define=="function"&&define.amd?define([],P):typeof exports=="object"&&(module.exports=P())}(function(){return qrcode});
+
+/* =====================================================================
+   Synchronisation entre appareils, chiffrée de bout en bout
+   Le serveur (Supabase) ne reçoit que du contenu chiffré sur l'appareil.
+   ===================================================================== */
+const CLOUD_URL = '';
+const CLOUD_KEY = '';
+const KEY_CLOUD = 'odj.cloud.v1';
+const SETTINGS_ITEM = '__settings';
+const SYNCED_SETTINGS = ['addTo', 'holidays', 'urgentDays', 'remindTime'];
+const PBKDF2_ITER = 310000;
+const enc8 = new TextEncoder(), dec8 = new TextDecoder();
+const b64e = (buf) => { const b = new Uint8Array(buf); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
+const b64d = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const b64urlToBytes = (s) => b64d(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+
+const vault = {
+  async derive(pass, saltB64, iterations) {
+    const base = await crypto.subtle.importKey('raw', enc8.encode(pass.normalize('NFC')), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt: b64d(saltB64), iterations },
+      base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  },
+  async encrypt(key, value, aad) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc8.encode(aad) }, key, enc8.encode(JSON.stringify(value)));
+    return `v1.${b64e(iv)}.${b64e(ct)}`;
+  },
+  async decrypt(key, text, aad) {
+    const [v, iv, ct] = String(text).split('.');
+    if (v !== 'v1' || !iv || !ct) throw new Error('format inconnu');
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64d(iv), additionalData: enc8.encode(aad) }, key, b64d(ct));
+    return JSON.parse(dec8.decode(pt));
+  },
+};
+
+const cloud = {
+  enabled: !!CLOUD_URL && !CLOUD_URL.startsWith('{{') && pwaWeb(),
+  st: null,          // état persistant (session, curseur, ce qui a déjà été envoyé)
+  key: null,         // clé de chiffrement (CryptoKey non exportable), gardée dans IndexedDB
+  status: 'off',     // off | locked | ready | syncing | offline | error | signedout
+  error: '',
+  running: false, again: false, timer: null, backoff: 0, lastOk: 0,
+
+  load() {
+    try { this.st = JSON.parse(lsGet(KEY_CLOUD) || 'null'); } catch (e) { this.st = null; }
+    if (!this.st || typeof this.st !== 'object') this.st = {};
+    this.st.pushed ||= {}; this.st.delPushed ||= {};
+  },
+  save() { lsSet(KEY_CLOUD, JSON.stringify(this.st)); },
+  isOn() { return this.enabled && !!(this.st && this.st.session); },
+
+  async init() {
+    if (!this.enabled) return;
+    this.load();
+    if (!this.st.session) { this.status = 'off'; return; }
+    try { this.key = await idb.get('cryptoKey'); } catch (e) { this.key = null; }
+    if (!this.key || this.st.keyUser !== this.st.session.user_id || !this.st.keySalt) { this.key = null; this.status = 'locked'; renderStatus(); return; }
+    this.status = 'ready';
+    this.bind();
+    this.sync();
+  },
+  bound: false,
+  bind() {
+    if (this.bound) return;
+    this.bound = true;
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.sync(); });
+    window.addEventListener('focus', () => this.sync());
+    window.addEventListener('online', () => { this.backoff = 0; this.sync(); });
+    setInterval(() => { if (document.visibilityState === 'visible') this.sync(); }, 60000);
+  },
+  /* Appelé après chaque modification locale : envoi groupé 1,5 s plus tard. */
+  schedule() {
+    if (!this.key || !this.isOn()) return;
+    if (this.running) { this.again = true; return; }
+    if (this.status === 'locked' || this.status === 'signedout') return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.sync(), 1500);
+  },
+
+  /* ---------- appels au serveur ---------- */
+  async api(path, { method = 'GET', body, auth = true, prefer } = {}) {
+    const headers = { apikey: CLOUD_KEY, 'Content-Type': 'application/json' };
+    if (prefer) headers.Prefer = prefer;
+    if (auth) headers.Authorization = `Bearer ${await this.token()}`;
+    let r;
+    try {
+      r = await fetch(CLOUD_URL + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
+    } catch (e) { const err = new Error('réseau'); err.offline = true; throw err; }
+    if (r.status === 401 && auth && !this._retried) {
+      this._retried = true;
+      try { await this.refresh(true); return await this.api(path, { method, body, auth, prefer }); } finally { this._retried = false; }
+    }
+    const text = await r.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+    if (!r.ok) {
+      const err = new Error((data && (data.msg || data.message || data.error_description || data.error)) || `erreur ${r.status}`);
+      err.status = r.status; err.code = data && (data.error_code || data.code);
+      if (/coffre changé/.test(err.message)) err.vaultChanged = true;
+      throw err;
+    }
+    return data;
+  },
+  async token() {
+    const s = this.st.session;
+    if (!s) { const e = new Error('non connecté'); e.signedOut = true; throw e; }
+    if (Date.now() > s.expires_at - 60000) await this.refresh();
+    return this.st.session.access_token;
+  },
+  async refresh(force = false) {
+    if (!this.st.session) return;
+    if (!force && Date.now() <= this.st.session.expires_at - 60000) return;
+    if (this._refreshing) return this._refreshing;
+    const stale = this.st.session.access_token;
+    this._refreshing = withLock('odj-cloud-auth', async () => {
+      // une autre fenêtre a peut-être déjà renouvelé la session : on relit avant d'agir
+      this.reloadSession();
+      const s = this.st.session;
+      if (!s) { const err = new Error('session expirée'); err.signedOut = true; throw err; }
+      if (s.access_token !== stale && Date.now() <= s.expires_at - 60000) return;
+      try {
+        const d = await this.api('/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: s.refresh_token }, auth: false });
+        this.setSession(d);
+      } catch (e) {
+        if (!e.offline && e.status && e.status < 500) { // session expirée ou révoquée : il faut se reconnecter
+          this.st.session = null; this.save(); this.status = 'signedout'; renderStatus();
+          const err = new Error('session expirée'); err.signedOut = true; throw err;
+        }
+        throw e;
+      }
+    }).finally(() => { this._refreshing = null; });
+    return this._refreshing;
+  },
+  reloadSession() {
+    try { const fresh = JSON.parse(lsGet(KEY_CLOUD) || 'null'); if (fresh && 'session' in fresh) this.st.session = fresh.session; } catch (e) { /* ignore */ }
+  },
+  setSession(d) {
+    this.st.session = { access_token: d.access_token, refresh_token: d.refresh_token, expires_at: Date.now() + (d.expires_in || 3600) * 1000, user_id: d.user && d.user.id, email: d.user && d.user.email };
+    this.save();
+  },
+  rpc(name, args) { return this.api(`/rest/v1/rpc/${name}`, { method: 'POST', body: args }); },
+
+  /* ---------- connexion ---------- */
+  async requestCode(email) {
+    await this.api('/auth/v1/otp', { method: 'POST', body: { email, create_user: true }, auth: false });
+    this.st.email = email; this.save();
+  },
+  async verifyCode(email, code) {
+    const d = await this.api('/auth/v1/verify', { method: 'POST', body: { type: 'email', email, token: code }, auth: false });
+    const prevUser = (this.st.session && this.st.session.user_id) || this.st.keyUser;
+    if (prevUser && prevUser !== (d.user && d.user.id)) { const ep = this.st.endpoint; this.resetLocalState(); this.st.endpoint = ep; this.st.pushAt = 0; }
+    this.setSession(d);
+    return this.api('/rest/v1/vault?select=salt,verifier,iterations', {}).then((rows) => (rows && rows[0]) || null);
+  },
+  async unlock(pass, existing) {
+    let v = existing;
+    if (!v) {
+      const salt = b64e(crypto.getRandomValues(new Uint8Array(16)));
+      const key = await vault.derive(pass, salt, PBKDF2_ITER);
+      const verifier = await vault.encrypt(key, { ok: 'to-do-list' }, 'verifier');
+      try {
+        await this.api('/rest/v1/vault', { method: 'POST', body: { salt, verifier, iterations: PBKDF2_ITER }, prefer: 'return=minimal' });
+        return this.useKey(key, salt);
+      } catch (e) {
+        if (e.status !== 409) throw e; // un autre appareil vient de créer le coffre : on vérifie avec le sien
+        v = (await this.api('/rest/v1/vault?select=salt,verifier,iterations', {}))[0];
+      }
+    }
+    const key = await vault.derive(pass, v.salt, v.iterations || PBKDF2_ITER);
+    try { await vault.decrypt(key, v.verifier, 'verifier'); } catch (e) { const err = new Error('Phrase secrète incorrecte.'); err.badPass = true; throw err; }
+    return this.useKey(key, v.salt);
+  },
+  async useKey(key, salt) {
+    this.key = key;
+    await idb.set('cryptoKey', key);
+    if (this.st.keySalt !== salt) { // nouveau coffre (première fois, ou phrase secrète changée) : tout renvoyer et tout relire
+      this.st.pushed = {}; this.st.delPushed = {}; this.st.cursor = null; this.st.remSig = null; this.st.settingsPushed = null; this.st.pushAt = 0;
+    }
+    this.st.keySalt = salt;
+    this.st.keyUser = this.st.session.user_id;
+    this.st.label ||= deviceLabel();
+    this.save();
+    this.status = 'ready';
+    this.bind();
+    await this.sync({ first: true });
+  },
+  resetLocalState() {
+    this.st = { pushed: {}, delPushed: {}, email: this.st.email };
+    this.key = null;
+    idb.del('cryptoKey').catch(() => {});
+  },
+  async signOut() {
+    try { await this.unsubscribePush(); } catch (e) { /* hors ligne : tant pis */ }
+    try { await this.api('/auth/v1/logout', { method: 'POST', body: {} }); } catch (e) { /* ignore */ }
+    this.resetLocalState(); this.save();
+    this.status = 'off'; renderStatus();
+  },
+  async resetCloud() {
+    await this.rpc('reset_cloud', {});
+    const email = this.st.email, session = this.st.session;
+    this.resetLocalState(); this.st.session = session; this.st.email = email; this.save();
+    this.status = 'locked'; renderStatus();
+  },
+
+  /* ---------- synchronisation ---------- */
+  async sync(opts = {}) {
+    if (!this.key || !this.isOn()) return;
+    if (this.running) { this.again = true; return; }
+    clearTimeout(this.timer);
+    this.running = true;
+    try { await withLock('odj-cloud-sync', () => this._sync(opts)); } finally { this.running = false; if (this.again) { this.again = false; this.schedule(); } }
+  },
+  async _sync({ first = false } = {}) {
+    // une autre fenêtre a pu avancer : on repart de l'état partagé
+    try { const fresh = JSON.parse(lsGet(KEY_CLOUD) || 'null'); if (fresh && fresh.session) { this.st = { ...this.st, ...fresh }; this.st.pushed ||= {}; this.st.delPushed ||= {}; } } catch (e) { /* ignore */ }
+    if (!this.key || !this.isOn()) return;
+    const prev = this.status;
+    this.status = 'syncing'; if (prev !== 'ready') renderStatus();
+    try {
+      // La phrase secrète a-t-elle été changée depuis un autre appareil ? Alors cette clé est périmée :
+      // on s'arrête avant d'envoyer quoi que ce soit qui serait illisible pour les autres appareils.
+      const v = await this.api('/rest/v1/vault?select=salt', {});
+      if (!v || !v[0] || v[0].salt !== this.st.keySalt) { await this.lockStale(); return; }
+      await this.pull();
+      await this.push();
+      await this.pushReminders();
+      await this.ensurePush();
+      this.status = 'ready'; this.error = ''; this.backoff = 0; this.lastOk = Date.now();
+      this.st.lastSync = this.lastOk; this.save();
+      if (first && !$('#dlgSync').open) toast('Synchronisation active : vos tâches sont maintenant sur tous vos appareils connectés.', { duration: 7000 });
+    } catch (e) {
+      console.warn('Synchronisation', e);
+      if (e.signedOut) this.status = 'signedout';
+      else if (e.offline) this.status = 'offline';
+      else { this.status = 'error'; this.error = e.message || String(e); }
+      if (e.vaultChanged) { this.lockStale(); return; }
+      if (this.status !== 'signedout') {
+        this.backoff = Math.min(300000, (this.backoff || 5000) * 2);
+        clearTimeout(this.timer); this.timer = setTimeout(() => this.sync(), this.backoff);
+      }
+    } finally {
+      renderStatus(); refreshSettings();
+    }
+  },
+  async lockStale() {
+    this.key = null; await idb.del('cryptoKey').catch(() => {});
+    this.status = 'locked'; this.error = '';
+    renderStatus(); refreshSettings();
+    toast('La phrase secrète a été changée depuis un autre appareil : saisissez la nouvelle pour reprendre la synchronisation.', { duration: 10000 });
+  },
+  async pull() {
+    // léger recouvrement pour ne rien rater (écritures simultanées) ; la fusion rend les doublons sans effet
+    const since = this.st.cursor ? new Date(Date.parse(this.st.cursor) - 30000).toISOString() : '1970-01-01T00:00:00Z';
+    const rows = [];
+    const cols = 'select=id,updated_at,deleted,data,modified_at&order=modified_at.asc,id.asc&limit=500';
+    let page = await this.api(`/rest/v1/items?${cols}&modified_at=gte.${encodeURIComponent(since)}`);
+    rows.push(...page);
+    while (page.length === 500) {
+      const last = page[page.length - 1];
+      const or = `(modified_at.gt."${last.modified_at}",and(modified_at.eq."${last.modified_at}",id.gt."${last.id}"))`;
+      page = await this.api(`/rest/v1/items?${cols}&or=${encodeURIComponent(or)}`);
+      rows.push(...page);
+    }
+    if (!rows.length) return;
+    const tasks = [], deleted = {};
+    let settings = null, maxMod = this.st.cursor || since;
+    for (const r of rows) {
+      if (r.modified_at > maxMod) maxMod = r.modified_at;
+      if (r.deleted) { if (r.id !== SETTINGS_ITEM) deleted[r.id] = Number(r.updated_at); continue; }
+      let v;
+      try { v = await vault.decrypt(this.key, r.data, r.id); } catch (e) { console.warn('Élément illisible', r.id); continue; }
+      if (r.id === SETTINGS_ITEM) { settings = { at: Number(r.updated_at), v }; continue; }
+      const t = normTask(v);
+      if (t && t.id === r.id) tasks.push(t);
+    }
+    // fusion tâche par tâche (même règle que pour le fichier de sauvegarde)
+    const m = mergeTasks(state.tasks, tasks, state.deleted, deleted);
+    let changed = !sameTasks(m.tasks, state.tasks);
+    if (changed) { state.tasks = m.tasks; }
+    state.deleted = m.deleted;
+    for (const r of rows) {
+      if (r.deleted) { this.st.delPushed[r.id] = Number(r.updated_at); continue; }
+      const t = byId(r.id);
+      if (t && t.updatedAt === Number(r.updated_at)) this.st.pushed[r.id] = t.updatedAt;
+    }
+    if (settings && settings.at > (state.settingsAt || 0)) {
+      for (const k of SYNCED_SETTINGS) if (k in settings.v) state.settings[k] = settings.v[k];
+      state.settings = normData({ tasks: [], settings: state.settings }).settings;
+      state.settingsAt = settings.at; this.st.settingsPushed = settings.at;
+      changed = true;
+    }
+    this.st.cursor = maxMod;
+    this.save();
+    if (changed) {
+      if (ui.undo.length || ui.redo.length) { ui.undo = []; ui.redo = []; ui.coalesceKey = null; }
+      state.savedAt = Math.max(Date.now(), state.savedAt + 1);
+      saveLocal(); fileSync.schedule();
+      if (!byId(ui.selectedId)) ui.selectedId = null;
+      cancelPendingCompletes();
+      render({ detail: !els.detail.contains(document.activeElement) });
+      reminders.refresh();
+    }
+  },
+  async push() {
+    const rows = [];
+    for (const t of state.tasks) {
+      if (this.st.pushed[t.id] === t.updatedAt) continue;
+      rows.push({ id: t.id, updated_at: t.updatedAt, deleted: false, data: await vault.encrypt(this.key, t, t.id) });
+    }
+    for (const [id, at] of Object.entries(state.deleted)) {
+      if (this.st.delPushed[id] === at) continue;
+      rows.push({ id, updated_at: at, deleted: true, data: null });
+    }
+    const sAt = state.settingsAt || 0;
+    if (sAt && this.st.settingsPushed !== sAt) {
+      const v = {}; for (const k of SYNCED_SETTINGS) v[k] = state.settings[k];
+      rows.push({ id: SETTINGS_ITEM, updated_at: sAt, deleted: false, data: await vault.encrypt(this.key, v, SETTINGS_ITEM) });
+    }
+    const rejected = [];
+    const send = async (batch) => {
+      const res = await this.rpc('push_items', { rows: batch, p_salt: this.st.keySalt });
+      const rej = new Set((res && res.rejected) || []);
+      for (const r of batch) {
+        if (rej.has(r.id)) { rejected.push(r.id); continue; }
+        if (r.id === SETTINGS_ITEM) this.st.settingsPushed = r.updated_at;
+        else if (r.deleted) this.st.delPushed[r.id] = r.updated_at;
+        else this.st.pushed[r.id] = r.updated_at;
+      }
+      this.save();
+    };
+    for (let i = 0; i < rows.length; i += 200) {
+      const batch = rows.slice(i, i + 200);
+      try { await send(batch); } catch (e) {
+        if (e.vaultChanged || e.offline || e.signedOut || !(e.status >= 400 && e.status < 500) || batch.length === 1) throw e;
+        // une ligne refusée (trop volumineuse…) ne doit pas bloquer les autres
+        for (const r of batch) { try { await send([r]); } catch (e2) { if (e2.vaultChanged || e2.offline || e2.signedOut) throw e2; console.warn('Élément non envoyé', r.id, e2); this.skipped = r.id; } }
+      }
+    }
+    if (rejected.length) await this.fetchServerVersions(rejected);
+  },
+  /* Le serveur avait une version plus récente (autre appareil, horloge différente) : elle remplace la nôtre. */
+  async fetchServerVersions(ids) {
+    const list = ids.filter((id) => id !== SETTINGS_ITEM);
+    if (ids.includes(SETTINGS_ITEM)) this.st.cursor = null; // relire les réglages au prochain passage
+    for (let i = 0; i < list.length; i += 100) {
+      const part = list.slice(i, i + 100).map((id) => `"${id}"`).join(',');
+      const rows = await this.api(`/rest/v1/items?select=id,updated_at,deleted,data,modified_at&id=in.(${encodeURIComponent(part)})`);
+      let changed = false;
+      for (const r of rows) {
+        const at = Number(r.updated_at), local = byId(r.id);
+        if (r.deleted) {
+          if (local) { state.tasks = state.tasks.filter((x) => x.id !== r.id); changed = true; }
+          state.deleted[r.id] = at; this.st.delPushed[r.id] = at; delete this.st.pushed[r.id];
+          continue;
+        }
+        let t;
+        try { t = normTask(await vault.decrypt(this.key, r.data, r.id)); } catch (e) { continue; }
+        if (!t) continue;
+        if (local) Object.assign(local, t); else { state.tasks.push(t); }
+        delete state.deleted[r.id];
+        this.st.pushed[r.id] = t.updatedAt; delete this.st.delPushed[r.id];
+        changed = true;
+      }
+      this.save();
+      if (changed) {
+        ui.undo = []; ui.redo = [];
+        state.savedAt = Math.max(Date.now(), state.savedAt + 1);
+        saveLocal(); fileSync.schedule(); render({ detail: !els.detail.contains(document.activeElement) }); reminders.refresh();
+      }
+    }
+  },
+  /* Les prochains rappels, pour que le serveur les envoie même appareils éteints. Le texte est chiffré. */
+  async pushReminders() {
+    const list = state.tasks.map((t) => [t, serverFireAt(t)]).filter(([, n]) => n)
+      .sort((a, b) => a[1] - b[1]).slice(0, 300);
+    const sig = JSON.stringify(list.map(([t, n]) => [t.id, n, t.title, notifBody(t)]));
+    if (sig === this.st.remSig) return;
+    const rows = [];
+    for (const [t, n] of list) rows.push({ task_id: t.id, fire_at: n, payload: await vault.encrypt(this.key, { title: truncate(t.title || 'Rappel', 140), body: truncate(notifBody(t), 240) }, `rem:${t.id}`) });
+    await this.rpc('set_reminders', { rows, p_salt: this.st.keySalt });
+    this.st.remSig = sig; this.save();
+  },
+
+  /* ---------- notifications sur cet appareil ---------- */
+  pushSupported() { return 'serviceWorker' in navigator && 'PushManager' in window && typeof Notification !== 'undefined'; },
+  needsIosInstall() { return isIos() && !pwa.standalone(); },
+  async enablePush() {
+    if (this.needsIosInstall()) { toast('Sur iPhone, installez d\'abord l\'application : bouton Partager, puis « Sur l\'écran d\'accueil ». Ouvrez-la depuis l\'icône, puis réactivez les notifications.', { duration: 12000 }); return false; }
+    if (!this.pushSupported()) { toast('Ce navigateur ne permet pas les notifications en arrière-plan.'); return false; }
+    const p = await Notification.requestPermission(); // appel immédiat, dans le geste de l'utilisateur
+    if (p !== 'granted') { toast('Notifications refusées. Elles se réactivent dans les réglages du téléphone ou du navigateur.', { duration: 8000 }); refreshSettings(); return false; }
+    const ok = await this.subscribe();
+    if (ok) { this.st.pushWanted = true; this.save(); toast('Notifications activées sur cet appareil, même application fermée.'); }
+    refreshSettings(); reminders.renderSettings();
+    return ok;
+  },
+  async subscribe() {
+    const reg = await navigator.serviceWorker.ready;
+    const pub = await this.rpc('vapid_public_key', {});
+    if (!pub) { toast('Le serveur prépare l\'envoi des notifications (première minute après l\'installation). Réessayez dans un instant.'); return false; }
+    let sub = await reg.pushManager.getSubscription();
+    if (sub && this.st.vapid && this.st.vapid !== pub) { await sub.unsubscribe().catch(() => {}); sub = null; }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(pub) });
+    const j = sub.toJSON();
+    if (this.st.endpoint && this.st.endpoint !== j.endpoint) await this.rpc('unregister_push', { p_endpoint: this.st.endpoint }).catch(() => {});
+    await this.rpc('register_push', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth, p_label: this.st.label || deviceLabel() });
+    this.st.vapid = pub; this.st.pushAt = Date.now(); this.st.endpoint = j.endpoint; this.save();
+    return true;
+  },
+  async unsubscribePush() {
+    if (!this.pushSupported()) return;
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    const endpoints = new Set([sub && sub.endpoint, this.st.endpoint].filter(Boolean));
+    for (const ep of endpoints) await this.rpc('unregister_push', { p_endpoint: ep }).catch(() => {});
+    if (sub) await sub.unsubscribe().catch(() => {});
+    this.st.pushWanted = false; this.st.endpoint = null; this.save();
+  },
+  /* Réabonne l'appareil si besoin (abonnement expiré, ou une fois par jour pour rester à jour). */
+  async ensurePush() {
+    if (!this.st.pushWanted || !this.pushSupported() || Notification.permission !== 'granted') return;
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (!sub || sub.endpoint !== this.st.endpoint || Date.now() - (this.st.pushAt || 0) > 86400000) await this.subscribe().catch((e) => console.warn('Abonnement', e));
+  },
+  pushActive() { return !!(this.st && this.st.pushWanted && typeof Notification !== 'undefined' && Notification.permission === 'granted'); },
+
+  statusLine() {
+    const email = (this.st.session && this.st.session.email) || this.st.email || '';
+    switch (this.status) {
+      case 'locked': return { tone: 'warn', icon: 'alert', text: 'Synchronisation en attente de votre phrase secrète.', action: { id: 'sync-unlock', label: 'Déverrouiller' } };
+      case 'signedout': return { tone: 'warn', icon: 'alert', text: 'Synchronisation interrompue : reconnectez-vous.', action: { id: 'sync-login', label: 'Se reconnecter' } };
+      case 'offline': return { tone: '', icon: 'sync', text: 'Hors ligne : vos modifications seront synchronisées au retour du réseau.', title: 'Vos tâches restent enregistrées sur cet appareil.' };
+      case 'error': return { tone: 'err', icon: 'alert', text: `Synchronisation impossible : ${this.error}`, action: { id: 'sync-now', label: 'Réessayer' } };
+      default: {
+        const at = this.lastOk || this.st.lastSync;
+        return { tone: 'ok', icon: 'sync', text: at ? `Synchronisé à ${F_TIME.format(new Date(at))}` : 'Synchronisation…', title: `Compte ${email}. Chiffré de bout en bout.` };
+      }
+    }
+  },
+};
+function pwaWeb() { return /^https?:$/.test(location.protocol); }
+/* Heure d'envoi par le serveur : rappel prévu ou reporté, tant qu'il n'a pas été traité (même s'il a déjà
+   été affiché sur cet appareil : le téléphone doit le recevoir aussi). */
+function serverFireAt(t) {
+  if (!t.remind || t.done || t.remind.ack) return null;
+  return t.remind.snooze || remindMs(t.remind);
+}
+/* Verrou partagé entre fenêtres (si le navigateur le permet). */
+function withLock(name, fn) {
+  if (navigator.locks && navigator.locks.request) return navigator.locks.request(name, fn);
+  return fn();
+}
+function isIos() { return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  if (/iPhone/.test(ua)) return 'iPhone';
+  if (/iPad/.test(ua) || isIos()) return 'iPad';
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? 'Téléphone Android' : 'Tablette Android';
+  if (/Windows/.test(ua)) return 'PC Windows';
+  if (/Mac/.test(ua)) return 'Mac';
+  return 'Navigateur';
+}
+
+/* ---------- Assistant de connexion ---------- */
+const syncUi = {
+  step: 'email', vaultRow: null, email: '', resendAt: 0,
+  open(step) {
+    const dlg = $('#dlgSync');
+    this.step = step || (cloud.st.session && !cloud.key ? 'pass' : 'email');
+    if (this.step === 'pass') {
+      this.vaultRow = undefined;
+      this.render(); dlg.showModal();
+      cloud.api('/rest/v1/vault?select=salt,verifier,iterations', {}).then((rows) => { this.vaultRow = rows && rows[0] || null; this.render(); })
+        .catch((e) => { if (e.signedOut) { this.step = 'email'; this.render(); } else this.fail(e); });
+      return;
+    }
+    this.render(); dlg.showModal();
+  },
+  fail(e) {
+    const m = $('#syncMsg');
+    let txt = e.message || String(e);
+    if (e.offline) txt = 'Pas de connexion au serveur. Vérifiez le réseau (le réseau de l\'entreprise bloque peut-être l\'adresse).';
+    else if (e.status === 429) txt = 'Trop de demandes : patientez une minute avant de redemander un code.';
+    else if (/expired|invalid/i.test(txt) && this.step === 'code') txt = 'Code incorrect ou expiré. Vérifiez le dernier e-mail reçu, ou demandez un nouveau code.';
+    if (m) { m.textContent = txt; m.hidden = false; }
+    this.busy(false);
+  },
+  busy(on) { for (const b of $$('#dlgSync .btn')) b.disabled = on; const s = $('#syncSpin'); if (s) s.hidden = !on; },
+  render() {
+    const body = $('#syncBody');
+    const email = cloud.st.email || '';
+    const steps = {
+      email: `<p class="setText">Retrouvez la même liste sur votre ordinateur et votre téléphone. Vos tâches sont chiffrées sur l'appareil avant d'être envoyées : le serveur ne peut pas les lire.</p>
+        <label class="fLabel" for="syncEmail">Votre adresse e-mail</label>
+        <input class="field wide" id="syncEmail" type="email" autocomplete="email" inputmode="email" placeholder="prenom.nom@exemple.com" value="${esc(email)}">
+        <p class="fHint">Vous recevrez un code à 6 chiffres. Pas de mot de passe à retenir.</p>`,
+      code: `<p class="setText">Un code a été envoyé à <strong>${esc(this.email)}</strong>. Il arrive en général en moins d'une minute ; pensez aux courriers indésirables.</p>
+        <label class="fLabel" for="syncCode">Code reçu par e-mail</label>
+        <input class="field code" id="syncCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="123456">
+        <p class="fHint"><button type="button" class="linkBtn" data-sync="resend">Renvoyer le code</button> <button type="button" class="linkBtn" data-sync="back">Changer d'adresse</button></p>`,
+      pass: this.vaultRow === undefined
+        ? '<p class="setText">Connexion au serveur…</p>'
+        : this.vaultRow
+          ? `<p class="setText">Saisissez la phrase secrète choisie lors de la première synchronisation.</p>
+            <label class="fLabel" for="syncPass">Phrase secrète</label>
+            <input class="field wide" id="syncPass" type="password" autocomplete="current-password">
+            <p class="fHint"><button type="button" class="linkBtn" data-sync="forgot">Phrase secrète oubliée ?</button></p>`
+          : `<p class="setText">Choisissez une phrase secrète. Elle chiffre vos tâches : sans elle, personne, pas même le serveur, ne peut les lire. Vous la saisirez une fois sur chaque appareil.</p>
+            <label class="fLabel" for="syncPass">Phrase secrète</label>
+            <input class="field wide" id="syncPass" type="password" autocomplete="new-password" placeholder="par exemple : quatre mots que vous retenez">
+            <label class="fLabel" for="syncPass2">Confirmez</label>
+            <input class="field wide" id="syncPass2" type="password" autocomplete="new-password">
+            <p class="fHint" id="syncStrength">Au moins 12 caractères. Une phrase de quatre mots est facile à retenir et très solide.</p>
+            <p class="fHint">Les tâches déjà présentes sur cet appareil seront ajoutées à ce compte.</p>
+            <label class="inlineCheck"><input type="checkbox" id="syncNoted"> J'ai noté ma phrase secrète : elle ne peut pas être récupérée.</label>`,
+      forgot: `<p class="setText">Sans la phrase secrète, la copie de vos tâches sur le serveur est illisible. Vous pouvez l'effacer et repartir de zéro : les tâches enregistrées sur <strong>cet appareil</strong> seront envoyées à nouveau, chiffrées avec une nouvelle phrase.</p>
+        <p class="setText">Sur vos autres appareils, il faudra ensuite saisir la nouvelle phrase. Les tâches qu'ils sont seuls à avoir ne seront plus synchronisées tant qu'ils ne sont pas reconnectés.</p>`,
+      done: `<p class="setText"><strong>Synchronisation active.</strong> ${cloud.pushActive() ? 'Les notifications sont activées sur cet appareil.' : ''}</p>${pushBlockHTML()}${addDeviceHTML()}`,
+    };
+    const foot = {
+      email: '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="send">Recevoir le code</button>',
+      code: '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="verify">Valider</button>',
+      pass: this.vaultRow === undefined ? '<button type="button" class="btn" data-sync="cancel">Annuler</button>'
+        : this.vaultRow ? '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="unlock">Déverrouiller</button>'
+        : '<button type="button" class="btn" data-sync="cancel">Annuler</button><button type="button" class="btn primary" data-sync="create">Activer la synchronisation</button>',
+      forgot: '<button type="button" class="btn" data-sync="pass">Retour</button><button type="button" class="btn dangerBtn" data-sync="reset">Effacer la copie du serveur</button>',
+      done: '<button type="button" class="btn primary" data-sync="cancel">Terminé</button>',
+    };
+    const titles = { email: 'Synchroniser mes appareils', code: 'Vérification', pass: this.vaultRow ? 'Phrase secrète' : 'Choisir une phrase secrète', forgot: 'Phrase secrète oubliée', done: 'C\'est prêt' };
+    $('#dlgSyncTitle').textContent = titles[this.step];
+    body.innerHTML = steps[this.step] + '<p class="fErr" id="syncMsg" role="alert" hidden></p>';
+    $('#syncFoot').innerHTML = `<span class="spin" id="syncSpin" hidden aria-label="En cours"></span>${foot[this.step]}`;
+    const first = body.querySelector('input');
+    if (first) setTimeout(() => first.focus(), 30);
+    if (this.step === 'done') renderQr();
+  },
+  async act(a) {
+    const msg = $('#syncMsg'); if (msg) msg.hidden = true;
+    try {
+      if (a === 'cancel') { $('#dlgSync').close(); return; }
+      if (a === 'back') { this.step = 'email'; this.render(); return; }
+      if (a === 'pass') { this.step = 'pass'; this.vaultRow = this.vaultRow || null; this.render(); return; }
+      if (a === 'send' || a === 'resend') {
+        const email = a === 'send' ? $('#syncEmail').value.trim().toLowerCase() : this.email;
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { this.fail(new Error('Adresse e-mail invalide.')); return; }
+        if (a === 'resend' && Date.now() < this.resendAt) { this.fail(new Error(`Patientez ${Math.ceil((this.resendAt - Date.now()) / 1000)} secondes avant de redemander un code.`)); return; }
+        this.busy(true);
+        await cloud.requestCode(email);
+        this.email = email; this.resendAt = Date.now() + 60000;
+        this.step = 'code'; this.render();
+        if (a === 'resend') toast('Nouveau code envoyé.');
+        return;
+      }
+      if (a === 'verify') {
+        const code = $('#syncCode').value.replace(/\D/g, '');
+        if (code.length < 6) { this.fail(new Error('Le code contient 6 chiffres.')); return; }
+        this.busy(true);
+        this.vaultRow = await cloud.verifyCode(this.email, code);
+        this.step = 'pass'; this.render();
+        return;
+      }
+      if (a === 'unlock') {
+        const p = $('#syncPass').value;
+        if (!p) { this.fail(new Error('Saisissez la phrase secrète.')); return; }
+        this.busy(true);
+        await cloud.unlock(p, this.vaultRow);
+        this.step = 'done'; this.render();
+        return;
+      }
+      if (a === 'create') {
+        const p = $('#syncPass').value, p2 = $('#syncPass2').value;
+        if (p.length < 12) { this.fail(new Error('La phrase secrète doit faire au moins 12 caractères.')); return; }
+        if (p !== p2) { this.fail(new Error('Les deux saisies ne correspondent pas.')); return; }
+        if (!$('#syncNoted').checked) { this.fail(new Error('Cochez la case pour confirmer que vous avez noté la phrase secrète.')); return; }
+        this.busy(true);
+        await cloud.unlock(p, null);
+        this.step = 'done'; this.render();
+        return;
+      }
+      if (a === 'forgot') { this.step = 'forgot'; this.render(); return; }
+      if (a === 'reset') {
+        this.busy(true);
+        await cloud.resetCloud();
+        this.vaultRow = null; this.step = 'pass'; this.render();
+        toast('Copie du serveur effacée. Choisissez une nouvelle phrase secrète.');
+        return;
+      }
+      if (a === 'push') { await cloud.enablePush(); this.render(); return; }
+    } catch (e) { this.fail(e); }
+  },
+};
+function pushBlockHTML() {
+  if (!cloud.isOn() || !cloud.key) return '';
+  if (cloud.needsIosInstall()) {
+    return '<div class="hintBox"><strong>Notifications sur iPhone</strong><p>Installez d\'abord l\'application : bouton <strong>Partager</strong> de Safari, puis <strong>« Sur l\'écran d\'accueil »</strong>. Ouvrez-la ensuite depuis son icône pour activer les notifications.</p></div>';
+  }
+  if (cloud.pushActive()) return '';
+  if (!cloud.pushSupported()) return '';
+  return `<div class="hintBox"><strong>Recevoir les rappels sur cet appareil</strong><p>Même application fermée : le serveur envoie la notification à l'heure prévue, sans connaître son contenu.</p><div class="btnRow"><button type="button" class="btn primary" data-sync="push">${icon('bell')}Activer les notifications</button></div></div>`;
+}
+function addDeviceHTML() {
+  const url = location.origin + location.pathname.replace(/index\.html$/, '');
+  return `<div class="hintBox device"><div class="qr" id="syncQr" aria-hidden="true"></div><div><strong>Ajouter un autre appareil</strong>
+    <ol class="steps2"><li>Sur l'autre appareil (téléphone ou ordinateur), ouvrez <a href="${esc(url)}" target="_blank" rel="noopener">${esc(url.replace(/^https:\/\//, ''))}</a> (ou scannez ce code avec l'appareil photo).</li>
+    <li>Installez l'application : sur Android, menu ⋮ puis « Installer » ; sur iPhone, Partager puis « Sur l'écran d'accueil ».</li>
+    <li>Dans l'application installée : Réglages, « Synchroniser mes appareils », même adresse e-mail et même phrase secrète.</li></ol></div></div>`;
+}
+function renderQr() {
+  const box = $('#syncQr');
+  if (!box || typeof qrcode !== 'function') return;
+  try {
+    const q = qrcode(0, 'M');
+    q.addData(location.origin + location.pathname.replace(/index\.html$/, ''));
+    q.make();
+    box.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+  } catch (e) { box.hidden = true; }
+}
+function renderSyncSettings() {
+  const sec = $('#setSyncSec');
+  if (!sec) return;
+  sec.hidden = !cloud.enabled;
+  if (!cloud.enabled) return;
+  const txt = $('#setSyncText'), btns = $('#setSyncBtns');
+  const email = (cloud.st.session && cloud.st.session.email) || cloud.st.email || '';
+  if (!cloud.isOn()) {
+    txt.innerHTML = 'Retrouvez la même liste sur votre ordinateur et votre téléphone, avec les rappels en notification sur le téléphone. Chiffré de bout en bout : le serveur ne peut pas lire vos tâches.';
+    btns.innerHTML = `<button type="button" class="btn primary" data-syncset="open">${icon('sync')}Synchroniser mes appareils</button>`;
+    return;
+  }
+  if (!cloud.key) {
+    txt.innerHTML = `Compte <strong>${esc(email)}</strong>. Saisissez votre phrase secrète pour reprendre la synchronisation sur cet appareil.`;
+    btns.innerHTML = `<button type="button" class="btn primary" data-syncset="unlock">Saisir la phrase secrète</button><button type="button" class="btn" data-syncset="signout">Se déconnecter</button>`;
+    return;
+  }
+  const s = cloud.statusLine();
+  txt.innerHTML = `Compte <strong>${esc(email)}</strong>. ${esc(s.text)}. ${cloud.pushActive() ? 'Notifications activées sur cet appareil.' : ''}`;
+  btns.innerHTML = `<button type="button" class="btn" data-syncset="now">${icon('sync')}Synchroniser maintenant</button>
+    ${cloud.pushActive() ? `<button type="button" class="btn" data-syncset="pushoff">${icon('bell')}Couper les notifications ici</button>` : `<button type="button" class="btn primary" data-syncset="push">${icon('bell')}Activer les notifications ici</button>`}
+    <button type="button" class="btn" data-syncset="device">${icon('link')}Ajouter un appareil</button>
+    <button type="button" class="btn dangerBtn" data-syncset="signout">Déconnecter cet appareil</button>`;
+}
+function bindSync() {
+  if (!cloud.enabled) return;
+  $('#dlgSync').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-sync]');
+    if (b) syncUi.act(b.dataset.sync);
+    else if (e.target === $('#dlgSync')) $('#dlgSync').close();
+  });
+  $('#dlgSync').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || e.target.type === 'checkbox') return;
+    e.preventDefault();
+    const primary = $('#syncFoot .btn.primary') || $('#syncFoot .btn.dangerBtn');
+    if (primary && !primary.disabled) primary.click();
+  });
+  $('#dlgSync').addEventListener('input', (e) => {
+    if (e.target.id !== 'syncPass' || !$('#syncStrength')) return;
+    const p = e.target.value, words = p.trim().split(/\s+/).filter(Boolean).length;
+    $('#syncStrength').textContent = p.length < 12 ? `Encore ${12 - p.length} caractère${12 - p.length > 1 ? 's' : ''} au minimum.`
+      : (words >= 4 || p.length >= 20) ? 'Très bien.' : 'Correct. Une phrase de quatre mots serait encore plus solide.';
+  });
+  $('#setSyncBtns').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-syncset]');
+    if (!b) return;
+    const a = b.dataset.syncset;
+    if (a === 'open') { $('#dlgSettings').close(); syncUi.open('email'); }
+    else if (a === 'unlock') { $('#dlgSettings').close(); syncUi.vaultRow = null; syncUi.open('pass'); }
+    else if (a === 'now') { await cloud.sync(); toast(cloud.status === 'ready' ? 'Synchronisé.' : cloud.statusLine().text); }
+    else if (a === 'push') { await cloud.enablePush(); renderSyncSettings(); }
+    else if (a === 'pushoff') { await cloud.unsubscribePush(); renderSyncSettings(); toast('Notifications coupées sur cet appareil.'); }
+    else if (a === 'device') { $('#dlgSettings').close(); syncUi.open('done'); }
+    else if (a === 'signout') {
+      const c = await confirmDialog({ title: 'Déconnecter cet appareil ?', text: 'Les tâches restent sur cet appareil, mais ne seront plus synchronisées ni notifiées. Vos autres appareils ne sont pas touchés.', buttons: [{ id: 'cancel', label: 'Annuler' }, { id: 'ok', label: 'Déconnecter', primary: true, danger: true }] });
+      if (c === 'ok') { await cloud.signOut(); toast('Appareil déconnecté de la synchronisation.'); }
+      refreshSettings();
+    }
+  });
+  // Session partagée entre fenêtres : une déconnexion ou un renouvellement dans une autre fenêtre s'applique ici
+  window.addEventListener('storage', (e) => {
+    if (e.key !== KEY_CLOUD) return;
+    cloud.reloadSession();
+    if (!cloud.st.session && cloud.status !== 'off') { cloud.key = null; cloud.status = 'off'; renderStatus(); refreshSettings(); }
+  });
+  // Ouvrir la tâche d'une notification (clic sur la notification, application déjà ouverte)
+  if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.type === 'open' && d.t) openTaskFromNotification(d.t);
+  });
+}
+function openTaskFromNotification(id) {
+  if (!byId(id)) { cloud.sync().then(() => { if (byId(id)) openTaskFromNotification(id); }); return; }
+  if (ui.view === 'done' || (ui.view === 'today' && !inToday(byId(id)))) setView('todo');
+  select(id, { open: true });
 }
 
 /* ---------- Démarrage ---------- */
@@ -4035,6 +4856,12 @@ function boot() {
     if (b.dataset.app === 'install') { $('#dlgSettings').close(); pwa.install(); }
     else if (b.dataset.app === 'share') pwa.shareLink();
   });
+  $('#syncCard').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-synccard]');
+    if (!b) return;
+    if (b.dataset.synccard === 'go') syncUi.open('email');
+    else { lsSet('odj.synccard.later', String(Date.now())); renderSetupCard(); }
+  });
   $('#setupCard').addEventListener('click', (e) => {
     const b = e.target.closest('[data-setup]');
     if (!b) return;
@@ -4051,6 +4878,9 @@ function boot() {
     else if (a === 'reconnect') fileSync.reconnect();
     else if (a === 'retry') fileSync.writeNow();
     else if (a === 'export') exportJson();
+    else if (a === 'sync-unlock') syncUi.open('pass');
+    else if (a === 'sync-login') syncUi.open('email');
+    else if (a === 'sync-now') cloud.sync();
   });
 
   document.addEventListener('keydown', onKey);
@@ -4116,6 +4946,8 @@ function boot() {
   fileSync.init();
   reminders.init();
   pwa.init();
+  bindSync();
+  cloud.init();
   // Une fenêtre modale rend la page inerte : on masque les cartes de rappel le temps qu'elle est ouverte.
   for (const d of $$('dialog')) {
     const open = d.showModal.bind(d);
@@ -4129,7 +4961,7 @@ function boot() {
   if (!ui.storageOk) renderStatus();
 
   // Point d'accès pour les tests automatisés et le débogage
-  window.__odj = { pwa, reminders, buildIcs, remindMs, state: () => state, ui, nextOccurrence, holidays, parseQuick, workdaysOfMonth, fileSync, idb, serialize, normData, VERSION };
+  window.__odj = { cloud, select, setSetting, pwa, reminders, buildIcs, remindMs, state: () => state, ui, nextOccurrence, holidays, parseQuick, workdaysOfMonth, fileSync, idb, serialize, normData, VERSION };
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

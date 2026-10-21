@@ -17,6 +17,11 @@ def svg(size, maskable=False, rounded=True):
     </svg>'''
 with sync_playwright() as p:
     b = p.chromium.launch()
+    # badge Android : silhouette blanche sur fond transparent
+    pg = b.new_page(viewport={'width': 96, 'height': 96})
+    pg.set_content('<html><body style="margin:0;background:transparent"><svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 32 32"><path d="M8 16.6l5 5L24 10.4" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/></svg></body></html>')
+    pg.screenshot(path=str(OUT / 'badge-96.png'), omit_background=True, clip={'x': 0, 'y': 0, 'width': 96, 'height': 96})
+    pg.close()
     for name, size, mask in [('icon-192.png', 192, False), ('icon-512.png', 512, False), ('maskable-512.png', 512, True), ('apple-touch-icon.png', 180, True)]:
         pg = b.new_page(viewport={'width': size, 'height': size})
         pg.set_content(f'<html><body style="margin:0;background:transparent">{svg(size, mask)}</body></html>')

@@ -688,3 +688,50 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
   .views button { padding: 0 8px; font-size: 14.5px; gap: 5px; }
   .tools { gap: 2px; }
 }
+
+/* ---------- Synchronisation ---------- */
+.fLabel { display: block; margin: 12px 0 6px; font-weight: 600; font-size: 14px; color: var(--ink); }
+.field.wide { width: 100%; height: 42px; font-size: 16px; }
+.field.code { width: 180px; height: 48px; font-size: 24px; letter-spacing: .3em; text-align: center; font-variant-numeric: tabular-nums; }
+.fHint { margin: 8px 0 0; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.fHint .linkBtn { padding: 0 4px; height: 26px; }
+.fErr { margin: 12px 0 0; padding: 9px 12px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 14px; }
+#dlgSync .inlineCheck { margin-top: 14px; align-items: flex-start; }
+#dlgSync .inlineCheck input { margin-top: 2px; }
+.dlgFoot { align-items: center; }
+.spin { width: 18px; height: 18px; margin-right: auto; border-radius: 50%; border: 2px solid var(--line-2); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.btn:disabled { opacity: .55; cursor: default; }
+.hintBox { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+.hintBox strong { display: block; margin-bottom: 4px; font: 600 15px/1.25 var(--ff-c); }
+.hintBox p { margin: 0 0 10px; font-size: 14px; color: var(--ink-2); }
+.hintBox p:last-child { margin-bottom: 0; }
+.hintBox.device { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 14px; align-items: start; }
+.qr { width: 112px; height: 112px; padding: 4px; border-radius: 8px; background: #fff; }
+.qr svg { display: block; width: 100%; height: 100%; }
+.qr svg rect[fill="#ffffff"] { fill: #fff; }
+.steps2 { margin: 4px 0 0; padding-left: 18px; font-size: 14px; color: var(--ink-2); }
+.steps2 li { margin: 3px 0; }
+.steps2 a { color: var(--accent); overflow-wrap: anywhere; }
+.installCard .onlyIos { display: none; }
+.installCard.ios .onlyIos { display: block; }
+.installCard.ios .notIos { display: none; }
+@media (max-width: 520px) { .hintBox.device { grid-template-columns: minmax(0, 1fr); } .qr { display: none; } }
+
+/* ---------- Téléphone : encoches, zoom à la saisie, cibles tactiles ---------- */
+.topbar { padding-top: max(12px, env(safe-area-inset-top)); padding-left: max(24px, env(safe-area-inset-left)); padding-right: max(24px, env(safe-area-inset-right)); }
+.status { padding-bottom: max(4px, env(safe-area-inset-bottom)); min-height: calc(40px + env(safe-area-inset-bottom)); }
+@media (max-width: 860px) {
+  .topbar { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+  .detail { padding-top: max(12px, env(safe-area-inset-top)); padding-bottom: calc(40px + env(safe-area-inset-bottom)); }
+}
+@media (pointer: coarse) {
+  input, select, textarea, .qa input, .search input, .stepText, .addStep input { font-size: 16px; }
+  .row { min-height: 52px; }
+  .check { width: 40px; height: 40px; }
+  .row { grid-template-columns: 30px 40px minmax(0, 1fr) auto; }
+  .iconBtn { width: 42px; height: 42px; }
+  .pill, .segBtn { min-height: 36px; }
+  .toasts, .toasts[popover] { bottom: calc(54px + env(safe-area-inset-bottom)); }
+}
+@media (pointer: coarse) and (max-width: 520px) { .row { grid-template-columns: 26px 40px minmax(0, 1fr); } }

@@ -2,7 +2,11 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="To do list">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta http-equiv="Content-Security-Policy" content="{{CSP}}">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0C6A74">{{HEAD_EXTRA}}
@@ -59,13 +63,26 @@
         <p class="qaHint" id="qaHint"></p>
       </form>
 
+      <div class="setupCard" id="syncCard" hidden>
+        <div class="setupIc"><svg class="ic" aria-hidden="true"><use href="#i-sync"/></svg></div>
+        <div class="setupBody">
+          <h2>Retrouver vos tâches de l'ordinateur</h2>
+          <p>Connectez cet appareil à votre compte pour avoir la même liste partout, et recevoir les rappels en notification même application fermée.</p>
+          <div class="btnRow">
+            <button type="button" class="btn primary" data-synccard="go">Synchroniser</button>
+            <button type="button" class="linkBtn" data-synccard="later">Plus tard</button>
+          </div>
+        </div>
+      </div>
+
       <div class="setupCard installCard" id="installCard" hidden>
         <div class="setupIc"><svg class="ic" aria-hidden="true"><use href="#i-install"/></svg></div>
         <div class="setupBody">
           <h2>Installer To do list sur cet ordinateur</h2>
-          <p>L'application s'ouvrira dans sa propre fenêtre, avec son icône dans la barre des tâches, et fonctionnera même sans réseau. Une fois installée, Chrome garde l'accès à votre fichier de sauvegarde : plus de sauvegarde en pause.</p>
+          <p class="notIos">L'application s'ouvrira dans sa propre fenêtre, avec son icône dans la barre des tâches, et fonctionnera même sans réseau. Une fois installée, Chrome garde l'accès à votre fichier de sauvegarde : plus de sauvegarde en pause.</p>
+          <p class="onlyIos">Touchez le bouton <strong>Partager</strong> de Safari (le carré avec une flèche vers le haut), puis <strong>« Sur l'écran d'accueil »</strong>. Ouvrez ensuite To do list depuis son icône : c'est nécessaire pour recevoir les notifications.</p>
           <div class="btnRow">
-            <button type="button" class="btn primary" data-install="go">Installer</button>
+            <button type="button" class="btn primary notIos" data-install="go">Installer</button>
             <button type="button" class="linkBtn" data-install="later">Plus tard</button>
           </div>
         </div>
@@ -129,6 +146,12 @@
       <h3>Points de restauration</h3>
       <p class="setText">Une copie de vos tâches est gardée chaque jour, sur les 7 derniers jours d'utilisation.</p>
       <ul class="snaps" id="snapList"></ul>
+    </section>
+
+    <section class="setSec" id="setSyncSec" hidden>
+      <h3>Synchronisation entre appareils</h3>
+      <p class="setText" id="setSyncText"></p>
+      <div class="btnRow" id="setSyncBtns"></div>
     </section>
 
     <section class="setSec" id="setAppSec" hidden>
@@ -241,6 +264,16 @@
   </div>
 </dialog>
 
+<!-- Synchronisation -->
+<dialog id="dlgSync" aria-labelledby="dlgSyncTitle">
+  <div class="dlgHead">
+    <h2 id="dlgSyncTitle">Synchroniser mes appareils</h2>
+    <button type="button" class="iconBtn" data-sync="cancel" aria-label="Fermer"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="dlgBody" id="syncBody"></div>
+  <div class="dlgFoot" id="syncFoot"></div>
+</dialog>
+
 <!-- Confirmation générique -->
 <dialog id="dlgConfirm" aria-labelledby="dlgConfirmTitle">
   <div class="dlgHead"><h2 id="dlgConfirmTitle"></h2></div>
@@ -268,6 +301,7 @@
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
     <symbol id="i-ok" viewBox="0 0 24 24"><path d="M4.5 12.5l4.5 4.5L19.5 6.5"/></symbol>
     <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 15.5H3z"/><path d="M12 10v4.5M12 17.5h.01"/></symbol>
+    <symbol id="i-sync" viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-13.7 5.6M4 12a8 8 0 0 1 13.7-5.6"/><path d="M17.5 2.8v3.9h-3.9M6.5 21.2v-3.9h3.9"/></symbol>
     <symbol id="i-matrix" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
     <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5.5 21V4.5M5.5 4.5h11l-2 4 2 4h-11"/></symbol>
     <symbol id="i-install" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8.5 20.5h7M12 7.5v6M9 11l3 3 3-3"/></symbol>
