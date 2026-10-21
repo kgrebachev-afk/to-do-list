@@ -256,6 +256,16 @@ function offsetPhrase(days, time) {
   if (days === 1) return `le lendemain à ${at}`;
   return `${days} jours après à ${at}`;
 }
+/* Tâche récurrente avec échéance : le rappel se règle par rapport à chaque occurrence. */
+const isRecurring = (t) => !!(t && t.repeat && t.due && !t.done);
+function relDayLabel(days) {
+  if (days === 0) return 'Le jour même';
+  if (days === -1) return 'La veille';
+  if (days === -7) return '1 semaine avant';
+  if (days < 0) return `${-days} jours avant`;
+  if (days === 1) return 'Le lendemain';
+  return `${days} jours après`;
+}
 /* Décaler l'échéance en gardant l'écart avec le rappel (« le rappel suit la tâche »). */
 function shiftDue(t, v) {
   const old = t.due;
@@ -1335,6 +1345,7 @@ function renderDetail() {
       <span class="propLabel" id="lblRem">Rappel</span>
       <div class="propCtl" role="group" aria-labelledby="lblRem">
         <input type="date" class="field" id="dRemDate" data-k="remdate" aria-label="Date du rappel">
+        <select id="dRemRel" data-k="remrel" aria-label="Moment du rappel, à chaque occurrence" hidden></select>
         <input type="time" class="field" id="dRemTime" data-k="remtime" step="300" aria-label="Heure du rappel">
         <button type="button" class="pill" data-rem="1h" data-k="rem-1h">Dans 1 h</button>
         <button type="button" class="pill" data-rem="tomorrow" data-k="rem-tomorrow" id="dRemTomorrow"></button>
@@ -1440,12 +1451,26 @@ function updateRemindBits(t) {
   const rd = $('#dRemDate', pane), rt = $('#dRemTime', pane);
   if (!rd) return;
   const r = t.remind;
+  const rel = isRecurring(t);
   if (document.activeElement !== rd) rd.value = r ? r.date : '';
   if (document.activeElement !== rt) rt.value = r ? r.time : '';
+  // Tâche récurrente : le rappel se règle par rapport à chaque occurrence (« la veille à 17 h »), pas par une date
+  const rs = $('#dRemRel', pane);
+  rd.hidden = rel; rs.hidden = !rel;
+  if (rel) {
+    const off = r ? diffDays(r.date, t.due) : null;
+    const offs = [0, -1, -2, -3, -7];
+    if (off !== null && !offs.includes(off)) offs.push(off);
+    rs.innerHTML = `<option value="">Pas de rappel</option>` + offs.sort((a, b) => b - a).map((d) => `<option value="${d}">${esc(relDayLabel(d))}</option>`).join('');
+    rs.value = off === null ? '' : String(off);
+    rt.disabled = false;
+  }
   const dtl = hLabel(state.settings.remindTime);
   $('#dRemTomorrow', pane).textContent = `Demain à ${dtl}`;
+  $('#dRemTomorrow', pane).hidden = rel;
+  pane.querySelector('[data-rem="1h"]').hidden = rel;
   const dday = $('#dRemDday', pane);
-  dday.textContent = `Le jour J à ${dtl}`;
+  dday.textContent = rel ? `Le jour même à ${dtl}` : `Le jour J à ${dtl}`;
   dday.hidden = !t.due;
   pane.querySelector('[data-rem="eve"]').hidden = !t.due;
   $('#dRemNone', pane).hidden = !r;
@@ -1453,6 +1478,21 @@ function updateRemindBits(t) {
   for (const b of $$('.pill[data-rem]', pane)) b.setAttribute('aria-pressed', 'false');
   const hint = $('#dRemHint', pane);
   hint.classList.remove('late');
+  if (rel && !t.done) {
+    if (!r) { hint.textContent = `Choisissez quand être prévenu : le rappel reviendra à chaque occurrence (${repeatSentence(t.repeat).replace(/^Se répète /, '')}).`; return; }
+    const parts = [`Rappel ${offsetPhrase(diffDays(r.date, t.due), r.time)}, à chaque occurrence (${repeatSentence(t.repeat).replace(/^Se répète /, '')}).`];
+    const nxt = remindNext(t);
+    if (nxt) parts.push(`Prochain : ${fmtWhenLong(nxt)}.`);
+    else {
+      // rappel de cette occurrence déjà passé : on annonce celui de l'occurrence suivante
+      const after = nextOccurrence(t.repeat, t.due);
+      const ms = remindMs({ date: addDays(after, diffDays(r.date, t.due)), time: r.time });
+      parts.push(r.firedAt ? `Envoyé ${fmtWhenLong(r.firedAt)} pour cette occurrence ; le suivant ${fmtWhenLong(ms)}, une fois celle-ci cochée.` : `L'heure est passée pour cette occurrence ; le suivant ${fmtWhenLong(ms)}, une fois celle-ci cochée.`);
+    }
+    if (reminders.permission() !== 'granted') parts.push('Il s\'affichera dans l\'application (notifications Windows non activées, voir Réglages).');
+    hint.textContent = parts.join(' ');
+    return;
+  }
   if (!r) { hint.textContent = ''; return; }
   const parts = [];
   if (t.done) parts.push('Tâche terminée : pas de rappel.');
@@ -1562,6 +1602,13 @@ function bindDetail() {
       const v = isISO(el.value) ? el.value : null;
       if (!v && el.value) return; // saisie incomplète
       setDue(t, v);
+    } else if (isRecurring(t) && (k === 'remrel' || k === 'remtime')) {
+      const sv = $('#dRemRel', pane).value, tm = $('#dRemTime', pane).value;
+      if (k === 'remrel' && sv === '') { if (t.remind) setRemind(t, null); return; }
+      if (k === 'remtime' && !isHM(tm)) return;
+      const off = sv === '' ? 0 : parseInt(sv, 10);
+      const time = isHM(tm) ? tm : (t.remind ? t.remind.time : state.settings.remindTime);
+      setRemind(t, relRemind(t, off, time));
     } else if (k === 'remdate' || k === 'remtime') {
       const d = $('#dRemDate', pane).value, tm = $('#dRemTime', pane).value;
       if (k === 'remdate' && !d) { if (t.remind) setRemind(t, null); return; }
@@ -1728,9 +1775,13 @@ function removeStep(t, sid, focusWhere) {
   const target = focusWhere === 'prev' ? t.steps[i - 1] : (t.steps[i] || t.steps[i - 1]);
   if (target) focusStep(target.id); else $('#dAddStep', els.detail).focus();
 }
+/* Rappel « N jours avant/après l'échéance à HH:MM » pour une tâche récurrente. */
+function relRemind(t, off, time) { return { date: addDays(t.due, off), time }; }
 function remindPreset(t, kind) {
   const today = todayISO(), dt = state.settings.remindTime;
   if (kind === 'none') return null;
+  if (isRecurring(t) && kind === 'dday') return relRemind(t, 0, dt);
+  if (isRecurring(t) && kind === 'eve') return relRemind(t, -1, '17:00');
   if (kind === '1h') { const d = new Date(Date.now() + 3600000); d.setSeconds(0, 0); d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5); return { date: toISO(d), time: `${pad(d.getHours())}:${pad(d.getMinutes())}` }; }
   if (kind === 'tomorrow') return { date: addDays(today, 1), time: dt };
   if (kind === 'dday') return { date: t.due || today, time: dt };
