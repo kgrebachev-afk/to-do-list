@@ -1,9 +1,9 @@
 /* To do list — service worker : l'application fonctionne hors ligne, et les rappels arrivent
    en notification même application fermée. Le texte des rappels arrive chiffré et n'est déchiffré
    que sur l'appareil, avec la clé gardée localement. */
-const VERSION = '1.5.0+7dba45bbc3';
+const VERSION = '1.6.0+47e460e91c';
 const CACHE = `todo-${VERSION}`;
-const ASSETS = ['./', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png', './icons/badge-96.png'];
+const ASSETS = ['./', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png', './icons/badge-96.png', './jsqr.js'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS.map((u) => new Request(u, { cache: 'reload' })))));
