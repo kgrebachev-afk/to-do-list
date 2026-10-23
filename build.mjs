@@ -3,7 +3,7 @@
 //   dist/web/              version installable (GitHub Pages) : même page + manifeste, service worker, icônes
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-const VERSION = '1.7.1';
+const VERSION = process.env.APP_VERSION || '1.8.0'; // APP_VERSION : tests de mise à jour uniquement
 // Serveur de synchronisation (adresse et clé publique du projet Supabase ; vides = synchronisation désactivée)
 let CLOUD = { url: '', anonKey: '' };
 try { CLOUD = { ...CLOUD, ...JSON.parse(readFileSync(new URL('./cloud.config.json', import.meta.url), 'utf8')) }; } catch (e) { /* pas de configuration */ }

@@ -780,3 +780,11 @@ dialog::backdrop { background: rgba(9, 15, 19, .38); }
   .qr.big { display: block; width: 200px; height: 200px; }
   .pairText { justify-self: stretch; }
 }
+
+/* Onglet Récurrentes et lien depuis À faire */
+.rsub { margin-top: 2px; font-size: 13px; color: var(--muted); }
+.parkedLink { display: flex; align-items: center; gap: 8px; width: 100%; margin: 10px 0 0; padding: 10px 14px; border: 1px dashed var(--line-2); border-radius: 10px; background: none; color: var(--ink-2); font: 500 14px/1.35 var(--ff); text-align: left; cursor: pointer; }
+.parkedLink:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); }
+.parkedLink .ic { width: 17px; height: 17px; color: var(--accent); flex: none; }
+.parkedLink .go { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.parkedLink:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

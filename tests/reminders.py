@@ -118,7 +118,9 @@ with sync_playwright() as p:
     check('occurrence suivante : rappel la veille du 3 déc.', nxt['due']=='2026-12-03' and (nxt['remind']['date'],nxt['remind']['time'])==('2026-12-02','17:00') and not nxt['remind']['fired'], (nxt['due'], nxt['remind']))
     check('même série (seriesId)', nxt['seriesId']==t['id'], (nxt['seriesId'], t['id']))
 
+    check('occurrence suivante lointaine : rangée dans l\'onglet Récurrentes', not pg.locator('[data-section="open"] .row', has_text='Clôture J+3').count())
     # --- 11. Outlook .ics
+    pg.click('#tab-recur'); pg.wait_for_timeout(100)
     pg.locator('#list .row', has_text='Clôture J+3').click()
     with pg.expect_download() as d: pg.locator('#dIcs').click()
     ics = open(d.value.path(), 'rb').read().decode('utf-8')
@@ -130,6 +132,7 @@ with sync_playwright() as p:
     check('.ics : non bloquant dans l\'agenda', 'TRANSP:TRANSPARENT' in ics)
 
     # --- 12. rappel manqué pendant que la page était fermée
+    pg.click('#tab-todo'); pg.wait_for_timeout(100)
     pg.fill('#qaInput','Envoyer le pack @10h'); pg.press('#qaInput','Enter')
     pg.close()
     pg = ctx.new_page(); pg.on('pageerror', lambda e: errs.append(str(e)))

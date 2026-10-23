@@ -19,6 +19,7 @@ with sync_playwright() as p:
     pg = ctx.new_page()
     pg.on('console', lambda m: errors.append(f'{m.type}: {m.text}') if m.type in ('error',) else None)
     pg.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
+    pg.clock.install(time='2026-10-21T10:00:00+02:00')  # date fixe : les attendus ne dépendent pas du jour du test
     pg.goto(URL); pg.wait_for_timeout(300)
 
     # --- logique pure

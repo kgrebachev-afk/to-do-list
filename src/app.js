@@ -16,7 +16,7 @@ const KEY_BACKUP = 'odj.backup.v1';
 const MAX_UNDO = 100;
 const MAX_SNAPS = 7;
 
-const DEFAULT_SETTINGS = Object.freeze({ theme: 'auto', addTo: 'bottom', holidays: true, doneTodayOpen: false, urgentDays: 2, remindTime: '09:00', remindSound: true, remindSticky: true });
+const DEFAULT_SETTINGS = Object.freeze({ theme: 'auto', addTo: 'bottom', holidays: true, doneTodayOpen: false, urgentDays: 2, recurLead: 0, remindTime: '09:00', remindSound: true, remindSticky: true });
 
 /* ---------- Utilitaires ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -370,6 +370,7 @@ function normData(d) {
   if (typeof s.doneTodayOpen === 'boolean') settings.doneTodayOpen = s.doneTodayOpen;
   if (isHM(s.remindTime)) settings.remindTime = s.remindTime;
   if ([0, 1, 2, 3, 5, 7].includes(s.urgentDays)) settings.urgentDays = s.urgentDays;
+  if ([-1, 0, 1, 3, 7].includes(s.recurLead)) settings.recurLead = s.recurLead;
   if (typeof s.remindSound === 'boolean') settings.remindSound = s.remindSound;
   if (typeof s.remindSticky === 'boolean') settings.remindSticky = s.remindSticky;
   // suppressions récentes (60 jours), pour qu'une fusion ne fasse pas réapparaître une tâche supprimée
@@ -721,6 +722,23 @@ function parseQuick(raw) {
 }
 
 /* ---------- Vues ---------- */
+/* Tâche récurrente dont la prochaine occurrence n'est pas encore là : rangée dans l'onglet Récurrentes,
+   elle revient dans À faire (et la matrice) le jour J, ou quelques jours avant selon le réglage. */
+function parked(t) {
+  if (!t.repeat || !t.due || t.done) return false;
+  const lead = state.settings.recurLead;
+  if (lead < 0 || inToday(t) || remindRinging(t)) return false;
+  // dès que le rappel de cette occurrence est passé, la tâche reste dans À faire jusqu'à ce qu'elle soit faite
+  if (t.remind && (t.remind.fired || remindMs(t.remind) <= Date.now())) return false;
+  return t.due > addDays(todayISO(), lead);
+}
+/* Affiche une vue où la tâche est visible (À faire, ou Récurrentes si elle y est rangée). */
+function revealTask(id) {
+  const t = byId(id);
+  if (!t || t.done || navOrder().includes(id)) return;
+  setView(parked(t) ? 'recur' : 'todo');
+}
+const recurSorted = () => openSorted().filter((t) => t.repeat).sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999') || a.position - b.position);
 function matches(t, q) {
   const f = fold(q);
   if (fold(t.title).includes(f)) return 'title';
@@ -739,7 +757,7 @@ function buildSections() {
     return out;
   }
   if (ui.view === 'todo') {
-    const out = [{ id: 'open', items: openSorted(), ranked: true, sortable: true }];
+    const out = [{ id: 'open', items: openSorted().filter((t) => !parked(t)), ranked: true, sortable: true }];
     const today = todayISO();
     const doneToday = doneSorted().filter((t) => dayOfMs(t.doneAt) === today);
     if (doneToday.length) {
@@ -750,8 +768,16 @@ function buildSections() {
   if (ui.view === 'today') {
     return [{ id: 'today', items: openSorted().filter(inToday), ranked: true, sortable: true }];
   }
+  if (ui.view === 'recur') {
+    const all = recurSorted(), soon = addDays(todayISO(), 7);
+    const near = all.filter((t) => !t.due || t.due <= soon), later = all.filter((t) => t.due && t.due > soon);
+    const out = [];
+    if (near.length) out.push({ id: 'recur-soon', head: { title: 'Cette semaine et en retard', n: near.length }, items: near, recur: true });
+    if (later.length) out.push({ id: 'recur-later', head: { title: 'Plus tard', n: later.length }, items: later, recur: true });
+    return out;
+  }
   if (ui.view === 'matrix') {
-    const open = openSorted();
+    const open = openSorted().filter((t) => !parked(t));
     return ['inbox', 'q1', 'q2', 'q3', 'q4'].map((q) => ({ id: q, items: open.filter((t) => quadrantOf(t) === q) }));
   }
   // Terminées, par semaine
@@ -800,11 +826,15 @@ function renderHeader() {
   const today = todayISO();
   const d = fromISO(today);
   els.todayLabel.textContent = `${F_LONG.format(d)}, semaine ${isoWeek(today)}`;
-  const open = state.tasks.filter((t) => !t.done);
+  const open = state.tasks.filter((t) => !t.done && !parked(t));
   const dueNow = open.filter(inToday);
+  const nRecur = state.tasks.filter((t) => !t.done && t.repeat).length;
+  if (els.countRecur) els.countRecur.textContent = nRecur || '';
   const late = dueNow.some((t) => t.due < today);
   els.countTodo.textContent = open.length || '';
   els.countToday.textContent = dueNow.length || '';
+  const ph = ui.view === 'recur' ? 'Ajouter une tâche récurrente (chaque semaine, à ajuster)' : 'Ajouter une tâche';
+  if (els.qa && els.qa.placeholder !== ph) { els.qa.placeholder = ph; els.qa.setAttribute('aria-label', ph); }
   els.countToday.className = `count${dueNow.length ? (late ? ' late' : ' hot') : ''}`;
   els.countToday.title = late ? 'Certaines échéances sont dépassées' : '';
   const q1 = open.filter((t) => quadrantOf(t) === 'q1').length;
@@ -884,9 +914,15 @@ function rowHTML(t, i, sec) {
   return `<div class="${cls.join(' ')}" role="listitem" data-id="${esc(t.id)}" id="row-${esc(t.id)}"${t.id === ui.selectedId ? ' aria-current="true"' : ''}>`
     + rank
     + `<label class="check"><input type="checkbox"${t.done ? ' checked' : ''} aria-label="${esc(label)}" tabindex="-1"><span class="box"><svg viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></svg></span></label>`
-    + `<div class="tcell"><div class="title">${title}</div>${snip}</div>`
+    + `<div class="tcell"><div class="title">${title}</div>${snip}${sec.recur ? recurSubHTML(t) : ''}</div>`
     + `<span class="meta">${meta.join('')}</span>`
     + '</div>';
+}
+function recurSubHTML(t) {
+  const bits = [repeatSentence(t.repeat).replace(/^Se répète /, '')];
+  if (t.remind && t.due) bits.push(`rappel ${offsetPhrase(diffDays(t.remind.date, t.due), t.remind.time)}`);
+  const txt = bits.join(' · ');
+  return `<div class="rsub">${esc(txt.charAt(0).toUpperCase() + txt.slice(1))}</div>`;
 }
 function sectionHeadHTML(sec) {
   const h = sec.head;
@@ -909,6 +945,7 @@ function emptyHTML() {
     }
     return '<div class="empty"><h2>Tout est fait</h2><p>Les tâches terminées restent consultables dans l\'onglet Terminées.</p></div>';
   }
+  if (ui.view === 'recur') return '<div class="empty"><h2>Aucune tâche récurrente</h2><p>Une tâche qui se répète (chaque semaine, chaque mois, chaque jour ouvré…) apparaît ici avec sa prochaine échéance. Elle ne revient dans À faire que le jour où elle est due, pour garder votre liste légère.</p><p>Tapez une tâche ci-dessus : elle sera créée chaque semaine, à partir d\'aujourd\'hui. Changez la répétition dans son détail.</p></div>';
   if (ui.view === 'today') return '<div class="empty"><h2>Rien pour aujourd\'hui</h2><p>Les tâches dont l\'échéance tombe aujourd\'hui ou est dépassée, et celles qui ont un rappel aujourd\'hui, apparaissent ici, dans l\'ordre de priorité.</p></div>';
   return '<div class="empty"><h2>Aucune tâche terminée</h2><p>Chaque tâche cochée arrive ici, classée par semaine, avec un récapitulatif à copier pour votre point hebdomadaire.</p></div>';
 }
@@ -924,6 +961,10 @@ function renderList() {
     html += sectionHeadHTML(s);
     if (!s.collapsed) html += s.items.map((t, i) => rowHTML(t, i, s)).join('');
     html += '</div>';
+  }
+  if (ui.view === 'todo' && !ui.query.trim()) {
+    const n = state.tasks.filter(parked).length;
+    if (n) html += `<button type="button" class="parkedLink" data-act="goto-recur">${icon('repeat')}<span>${plural(n, 'tâche récurrente à venir', 'tâches récurrentes à venir')}, rangée${n > 1 ? 's' : ''} jusqu'à leur échéance</span><span class="grow"></span><span class="go">Voir</span></button>`;
   }
   els.list.innerHTML = html;
   const ids = navOrder(sections);
@@ -1025,7 +1066,7 @@ function quadHTML(q, items) {
   </section>`;
 }
 function renderMatrix() {
-  const open = openSorted();
+  const open = openSorted().filter((t) => !parked(t)); // récurrentes lointaines : rangées (onglet Récurrentes)
   const by = { q1: [], q2: [], q3: [], q4: [], inbox: [] };
   for (const t of open) by[quadrantOf(t)].push(t);
   const hadFocus = els.matrix.contains(document.activeElement) || document.activeElement === document.body;
@@ -1886,7 +1927,7 @@ const reminders = {
     });
     n.onclick = () => {
       window.focus();
-      if (tag !== 'summary' && byId(tag)) { if (ui.view === 'done') setView('todo'); select(tag, { open: true }); }
+      if (tag !== 'summary' && byId(tag)) { revealTask(tag); select(tag, { open: true }); }
       n.close();
     };
     this.notes.set(tag, n);
@@ -2012,7 +2053,7 @@ const reminders = {
     if (how === 'done') { commit(() => { t.remind.ack = true; touch(t); }, { undo: false, detail: false }); setDone(id, true); }
     else if (how === 'open' || how === 'ok') {
       commit(() => { t.remind.ack = true; touch(t); }, { undo: false, detail: false });
-      if (how === 'open') { window.focus(); if (ui.view === 'done') setView('todo'); select(id, { open: true }); }
+      if (how === 'open') { window.focus(); revealTask(id); select(id, { open: true }); }
     } else if (how.startsWith('snz:')) {
       const ms = snoozeTarget(how.slice(4));
       commit(() => { t.remind.snooze = ms; t.remind.ack = false; touch(t); }, { undo: false, detail: false });
@@ -2218,21 +2259,36 @@ const pwa = {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').then((reg) => {
         this.reg = reg;
-        if (reg.waiting && navigator.serviceWorker.controller) this.offerUpdate(reg.waiting);
+        if (reg.waiting && navigator.serviceWorker.controller) this.applyUpdate(reg.waiting); // au lancement : appliquée tout de suite
         reg.addEventListener('updatefound', () => {
           const w = reg.installing;
           if (!w) return;
-          w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) this.offerUpdate(w); });
+          w.addEventListener('statechange', () => {
+            if (w.state !== 'installed' || !navigator.serviceWorker.controller) return;
+            // juste après l'ouverture (rien en cours de saisie) : appliquée tout de suite ; sinon proposée
+            const a = document.activeElement, typing = a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.value;
+            if (performance.now() < 15000 && !typing) this.applyUpdate(w); else this.offerUpdate(w);
+          });
         });
         setInterval(() => reg.update().catch(() => {}), 3 * 3600000);
+        // Mise à jour en attente : installée dès que l'application passe en arrière-plan (personne ne la voit se recharger)
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'hidden' && reg.waiting && navigator.serviceWorker.controller) this.applyUpdate(reg.waiting);
+          if (document.visibilityState === 'visible') reg.update().catch(() => {});
+        });
       }).catch((e) => console.warn('Mode hors ligne indisponible', e));
       let reloading = false;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (reloading || !this.updating) return;
         reloading = true;
         fileSync.flush();
+        try { sessionStorage.setItem('odj.updatedFrom', VERSION); } catch (e) { /* ignore */ }
         setTimeout(() => location.reload(), 150);
       });
+      // Juste après une mise à jour : on rassure, rien n'est à refaire
+      let from = null;
+      try { from = sessionStorage.getItem('odj.updatedFrom'); sessionStorage.removeItem('odj.updatedFrom'); } catch (e) { /* ignore */ }
+      if (from && from !== VERSION) setTimeout(() => toast(`To do list est à jour (version ${VERSION}). Tâches, synchronisation, sauvegarde et notifications sont conservées : rien à refaire.`, { duration: 8000 }), 600);
     }
     // Raccourcis de l'icône (clic droit dans la barre des tâches)
     const q = new URLSearchParams(location.search);
@@ -2241,6 +2297,11 @@ const pwa = {
     if (q.get('tache')) { const id = q.get('tache'); setTimeout(() => openTaskFromNotification(id), 0); }
     if (q.toString()) { try { history.replaceState(history.state, '', location.pathname); } catch (e) { /* ignore */ } }
     this.render();
+  },
+  applyUpdate(worker) {
+    if (this.updating) return;
+    this.updating = true;
+    worker.postMessage('skipWaiting');
   },
   offerUpdate(worker) {
     toast('Une nouvelle version de To do list est prête.', {
@@ -2805,6 +2866,7 @@ function refreshSettings() {
   $('#prefAddTo').value = state.settings.addTo;
   $('#prefHolidays').checked = state.settings.holidays;
   $('#prefUrgentDays').value = String(state.settings.urgentDays);
+  $('#prefRecurLead').value = String(state.settings.recurLead);
   $('#prefRemTime').value = state.settings.remindTime;
   $('#prefRemSound').checked = state.settings.remindSound;
   $('#prefRemSticky').checked = state.settings.remindSticky;
@@ -2851,6 +2913,7 @@ function bindSettings() {
   $('#prefAddTo').addEventListener('change', (e) => { setSetting('addTo', e.target.value); renderQuickHint(); });
   $('#prefHolidays').addEventListener('change', (e) => setSetting('holidays', e.target.checked));
   $('#prefUrgentDays').addEventListener('change', (e) => setSetting('urgentDays', +e.target.value));
+  $('#prefRecurLead').addEventListener('change', (e) => setSetting('recurLead', +e.target.value));
   $('#prefRemTime').addEventListener('change', (e) => { if (isHM(e.target.value)) setSetting('remindTime', e.target.value); });
   $('#prefRemSound').addEventListener('change', (e) => setSetting('remindSound', e.target.checked));
   $('#prefRemSticky').addEventListener('change', (e) => setSetting('remindSticky', e.target.checked));
@@ -2899,6 +2962,11 @@ function bindQuickAdd() {
       const raw = els.qa.value;
       const t = addTask(raw, where);
       if (!t) return;
+      if (ui.view === 'recur') {
+        commit(() => { if (!t.due) t.due = todayISO(); t.repeat = makeRepeat('weekly', t.due); touch(t); }, { undo: false, detail: false });
+        ui.selectedId = t.id;
+        toast(`Tâche récurrente ajoutée : ${repeatSentence(t.repeat).replace(/^Se répète /, '')}. Changez la répétition dans son détail.`);
+      }
       els.qa.value = '';
       if (!ui.selectedId && !isNarrow()) ui.selectedId = t.id;
       renderQuickHint();
@@ -2906,6 +2974,7 @@ function bindQuickAdd() {
       let note = '';
       if (ui.view === 'done') ui.view = 'todo';
       else if (ui.view === 'today' && !(t.due && t.due <= todayISO())) note = "Tâche ajoutée dans À faire : elle n'a pas d'échéance aujourd'hui.";
+      else if (ui.view === 'todo' && parked(t)) note = 'Tâche récurrente rangée dans l\'onglet Récurrentes jusqu\'à son échéance.';
       render({ detail: !els.detail.dataset.id });
       const r = rowEl(t.id);
       if (r) { r.scrollIntoView({ block: 'nearest' }); if (!reducedMotion()) { r.classList.add('flash'); setTimeout(() => r.classList.remove('flash'), 1400); } }
@@ -2945,6 +3014,7 @@ function bindList() {
   els.list.addEventListener('click', (e) => {
     if (ui.justDragged) return;
     if (e.target.closest('[data-act="open-file"]')) { fileSync.openExisting(); return; }
+    if (e.target.closest('[data-act="goto-recur"]')) { setView('recur'); return; }
     const tog = e.target.closest('[data-toggle]');
     if (tog) { setSetting('doneTodayOpen', !state.settings.doneTodayOpen); return; }
     const rec = e.target.closest('[data-recap]');
@@ -3039,7 +3109,7 @@ function onKey(e) {
   }
 
   const onButton = e.target.closest && e.target.closest('button, a, summary');
-  const digit = { Digit1: 'todo', Numpad1: 'todo', Digit2: 'today', Numpad2: 'today', Digit3: 'matrix', Numpad3: 'matrix', Digit4: 'done', Numpad4: 'done' }[e.code];
+  const digit = { Digit1: 'todo', Numpad1: 'todo', Digit2: 'today', Numpad2: 'today', Digit3: 'matrix', Numpad3: 'matrix', Digit4: 'recur', Numpad4: 'recur', Digit5: 'done', Numpad5: 'done' }[e.code];
   if (digit && !e.altKey && (e.code.startsWith('Digit') || /^\d$/.test(k))) { e.preventDefault(); setView(digit); return; }
 
   if (e.altKey && (k === 'ArrowUp' || k === 'ArrowDown')) {
@@ -3119,7 +3189,7 @@ const CLOUD_URL = '{{CLOUD_URL}}';
 const CLOUD_KEY = '{{CLOUD_KEY}}';
 const KEY_CLOUD = 'odj.cloud.v2';
 const SETTINGS_ITEM = '__settings';
-const SYNCED_SETTINGS = ['addTo', 'holidays', 'urgentDays', 'remindTime'];
+const SYNCED_SETTINGS = ['addTo', 'holidays', 'urgentDays', 'recurLead', 'remindTime'];
 const INITIAL_HASH = typeof location !== 'undefined' ? location.hash : '';
 const enc8 = new TextEncoder(), dec8 = new TextDecoder();
 const b64e = (buf) => { const b = new Uint8Array(buf); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
@@ -3251,6 +3321,7 @@ const cloud = {
     if (this.bound) return;
     this.bound = true;
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.sync(); });
+    window.addEventListener('pageshow', () => this.sync()); // retour sur l'application (iPhone)
     window.addEventListener('focus', () => this.sync());
     window.addEventListener('online', () => { this.backoff = 0; this.sync(); });
     setInterval(() => { if (document.visibilityState === 'visible') this.sync(); }, 60000);
@@ -3264,14 +3335,18 @@ const cloud = {
   },
 
   /* ---------- appels au serveur (fonctions de la base uniquement) ---------- */
+  timeoutMs: 20000,
   async rpc(name, args = {}) {
     const headers = { apikey: CLOUD_KEY, 'Content-Type': 'application/json' };
     if (!CLOUD_KEY.startsWith('sb_')) headers.Authorization = `Bearer ${CLOUD_KEY}`; // ancienne clé « anon » (JWT)
-    let r;
+    // Délai maximal : sur iPhone, une requête interrompue par la mise en arrière-plan peut ne jamais aboutir
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), this.timeoutMs) : null;
+    let r, text;
     try {
-      r = await fetch(`${CLOUD_URL}/rest/v1/rpc/${name}`, { method: 'POST', headers, body: JSON.stringify(args), cache: 'no-store' });
-    } catch (e) { const err = new Error('réseau'); err.offline = true; throw err; }
-    const text = await r.text();
+      r = await fetch(`${CLOUD_URL}/rest/v1/rpc/${name}`, { method: 'POST', headers, body: JSON.stringify(args), cache: 'no-store', signal: ctl ? ctl.signal : undefined });
+      text = await r.text();
+    } catch (e) { const err = new Error('réseau'); err.offline = true; throw err; } finally { clearTimeout(timer); }
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
     if (!r.ok) {
@@ -3397,10 +3472,14 @@ const cloud = {
   /* ---------- synchronisation ---------- */
   async sync(opts = {}) {
     if (!this.key || !this.isOn()) return;
-    if (this.running) { this.again = true; return; }
+    // une synchronisation bloquée (application suspendue en pleine requête) ne doit pas tout arrêter
+    if (this.running && Date.now() - this.runningSince < 90000) { this.again = true; return; }
     clearTimeout(this.timer);
-    this.running = true;
-    try { await withLock('odj-cloud-sync', () => this._sync(opts)); } finally { this.running = false; if (this.again) { this.again = false; this.schedule(); } }
+    const run = {};
+    this.running = run; this.runningSince = Date.now();
+    try { await withLock('odj-cloud-sync', () => this._sync(opts)); } finally {
+      if (this.running === run) { this.running = false; if (this.again) { this.again = false; this.schedule(); } }
+    }
   },
   async _sync({ first = false, retireOk = true } = {}) {
     // une autre fenêtre a pu avancer (ou changer de code) : on repart de l'état partagé
@@ -4134,7 +4213,7 @@ function bindSync() {
 }
 function openTaskFromNotification(id) {
   if (!byId(id)) { cloud.sync().then(() => { if (byId(id)) openTaskFromNotification(id); }); return; }
-  if (ui.view === 'done' || (ui.view === 'today' && !inToday(byId(id)))) setView('todo');
+  revealTask(id);
   select(id, { open: true });
 }
 
@@ -4155,6 +4234,7 @@ function boot() {
   els.countTodo = $('#count-todo');
   els.countToday = $('#count-today');
   els.countMatrix = $('#count-matrix');
+  els.countRecur = $('#count-recur');
   els.matrix = $('#matrix');
   els.scrim = $('#scrim');
   els.list = $('#list');

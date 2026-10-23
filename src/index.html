@@ -34,6 +34,7 @@
       <button type="button" role="tab" data-view="todo" id="tab-todo">À faire <span class="count" id="count-todo"></span></button>
       <button type="button" role="tab" data-view="today" id="tab-today">Aujourd'hui <span class="count" id="count-today"></span></button>
       <button type="button" role="tab" data-view="matrix" id="tab-matrix" title="Urgent / important (Maj+3)">Matrice <span class="count" id="count-matrix"></span></button>
+      <button type="button" role="tab" data-view="recur" id="tab-recur" title="Tâches qui se répètent (Maj+4)">Récurrentes <span class="count" id="count-recur"></span></button>
       <button type="button" role="tab" data-view="done" id="tab-done">Terminées</button>
     </nav>
 
@@ -197,6 +198,15 @@
           <option value="top">En haut de la liste</option>
         </select>
 
+        <label for="prefRecurLead">Tâches récurrentes dans À faire</label>
+        <select id="prefRecurLead">
+          <option value="0">Le jour de l'échéance</option>
+          <option value="1">1 jour avant</option>
+          <option value="3">3 jours avant</option>
+          <option value="7">1 semaine avant</option>
+          <option value="-1">Toujours (ne pas les ranger)</option>
+        </select>
+
         <label for="prefUrgentDays">Urgence automatique</label>
         <select id="prefUrgentDays">
           <option value="0">Échéance aujourd'hui ou dépassée</option>
@@ -242,7 +252,7 @@
     <section>
       <h3>Navigation</h3>
       <dl>
-        <dt><kbd>Maj</kbd> <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></dt><dd>À faire, Aujourd'hui, Matrice, Terminées</dd>
+        <dt><kbd>Maj</kbd> <kbd>1</kbd> … <kbd>5</kbd></dt><dd>À faire, Aujourd'hui, Matrice, Récurrentes, Terminées</dd>
         <dt><kbd>Ctrl</kbd> <kbd>F</kbd></dt><dd>Rechercher</dd>
         <dt><kbd>Échap</kbd></dt><dd>Revenir à la liste</dd>
         <dt><kbd>?</kbd></dt><dd>Afficher cette aide</dd>

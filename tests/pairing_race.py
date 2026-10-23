@@ -49,6 +49,20 @@ try:
     check('réponse tardive d\'un QR code abandonné : ignorée', ph2.evaluate("window.__odj.syncUi.pending") == ownCode)
     ph2.click('#syncFoot [data-sync="join-pending"]'); wait(ph2, "window.__odj.cloud.isOn()")
     check('… l\'appareil rejoint bien la liste du second QR code', ph2.evaluate("window.__odj.cloud.st.code") == ownCode)
+    # 3. requête qui ne répond jamais (iPhone suspendu en pleine synchronisation) : la synchronisation repart
+    ph2.evaluate("(() => { window.__odj.cloud.timeoutMs = 1500; const f = window.fetch; let n = 0; window.fetch = (u, o) => (String(u).includes('pull_items') && n++ === 0) ? new Promise((res, rej) => { if (o && o.signal) o.signal.addEventListener('abort', () => rej(new DOMException('abandon', 'AbortError'))); }) : f(u, o); })()")
+    ph2.evaluate("window.__odj.cloud.sync()"); ph2.wait_for_timeout(300)
+    own.fill('#qaInput', 'Ajoutée sur le PC'); own.press('#qaInput', 'Enter'); own.wait_for_timeout(2500)
+    wait(ph2, "!window.__odj.cloud.running", 10)
+    ph2.evaluate("window.__odj.cloud.sync()")
+    wait(ph2, "window.__odj.state().tasks.some(t => t.title === 'Ajoutée sur le PC')", 15)
+    check('requête bloquée : abandonnée au bout du délai, la tâche du PC arrive ensuite', ph2.evaluate("window.__odj.state().tasks.some(t => t.title === 'Ajoutée sur le PC')"))
+    # 4. synchronisation restée « en cours » (verrou jamais libéré) : relancée au bout de 90 s
+    ph2.evaluate("(() => { const c = window.__odj.cloud; c.running = {}; c.runningSince = Date.now() - 100000; })()")
+    own.fill('#qaInput', 'Deuxième ajout PC'); own.press('#qaInput', 'Enter'); own.wait_for_timeout(2500)
+    ph2.evaluate("window.__odj.cloud.sync()")
+    wait(ph2, "window.__odj.state().tasks.some(t => t.title === 'Deuxième ajout PC')", 15)
+    check('synchronisation restée bloquée : relancée, rien n\'est perdu', True)
     b.close()
 finally:
     web.terminate(); fake.shutdown()

@@ -45,7 +45,9 @@ try:
     check('raccourci : adresse nettoyée', pg2.url.endswith('/to-do-list/'), pg2.url)
     pg2.close()
     ctx.set_offline(False)
-    # --- mise à jour : nouvelle version publiée
+    # --- mise à jour : nouvelle version publiée pendant l'utilisation (application ouverte depuis un moment)
+    end = time.time() + 20
+    while pg.evaluate("performance.now()") < 16000 and time.time() < end: pg.wait_for_timeout(500)
     srv=subprocess.Popen([sys.executable,'-m','http.server','8780','--bind','127.0.0.1','-d',str(SCR/'site')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); time.sleep(0.8)
     idx=SCR/'site/to-do-list/index.html'; idx.write_text(idx.read_text().replace('<h1>To do list</h1>','<h1>To do list</h1><!--v2-->'))
     swf=SCR/'site/to-do-list/sw.js'; swf.write_text(re.sub(r"\+[0-9a-f]{10}'", "+nouvelle00'", swf.read_text()))
