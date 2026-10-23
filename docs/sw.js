@@ -1,7 +1,7 @@
 /* To do list — service worker : l'application fonctionne hors ligne, et les rappels arrivent
    en notification même application fermée. Le texte des rappels arrive chiffré et n'est déchiffré
    que sur l'appareil, avec la clé gardée localement. */
-const VERSION = '1.7.1+f4ee7fd72c';
+const VERSION = '1.8.0+c223e62837';
 const CACHE = `todo-${VERSION}`;
 const ASSETS = ['./', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png', './icons/badge-96.png', './jsqr.js'];
 
